@@ -75,7 +75,7 @@ compile_unixlib() {
         echo "OK"
         SUCCEEDED=$((SUCCEEDED + 1))
     else
-        echo "FAILED"
+        echo "FAI LED"
         echo "----- $OBJ_DIR/$name.err -----"
         cat "$OBJ_DIR/$name.err"
         echo "--------------------------------"
