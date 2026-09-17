@@ -1,0 +1,120 @@
+name: Build Madeira IPA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  BUNDLE_ID: com.NotBoodiOS.madeira   # change this
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 360            # the full native chain is slow
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive     # required: FEX/wine/dxmt forks
+
+      - name: Compute submodule key
+        id: sub
+        run: echo "sha=$(git submodule status | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore native libraries
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            FEX/build-ios
+            app/Madeira/libwineserver.a
+            app/Madeira/libntdll_unix.a
+            app/Madeira/libwin32u_unix.a
+            app/Madeira/libdxmt_combined.a
+          key: madeira-native-${{ steps.sub.outputs.sha }}
+
+      # ---------- everything below only runs on a cache miss ----------
+
+      - name: Install build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install cmake ninja meson nasm python-setuptools
+          xcodebuild -downloadComponent MetalToolchain
+
+      - name: Fetch llvm-mingw
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchains
+          curl -L https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz | tar -xJ -C toolchains/
+
+      - name: Build Wine host tree (build-macos)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # The ntdll/win32u/wineserver scripts need wine/build-macos headers.
+          # Replicate the configure the wine fork documents, e.g.:
+          mkdir -p wine/build-macos && cd wine/build-macos
+          ../configure --enable-win64 --without-x --without-freetype
+          make -j$(sysctl -n hw.ncpu)
+
+      - name: Build Wine ARM64EC tree (headers for dwrite)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # cross-configure wine into wine/build-arm64ec with the llvm-mingw
+          # toolchain so widl generates the arm64ec headers the scripts include
+          echo "See wine fork docs / replicate author's local configure"
+
+      - name: Build gnutls / freetype / wine unix libs / wineserver
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          bash build/gnutls-ios/build.sh
+          bash build/freetype-ios/build.sh
+          bash build/ntdll-unix/build.sh     # -> app/Madeira/libntdll_unix.a
+          bash build/win32u-unix/build.sh    # -> app/Madeira/libwin32u_unix.a
+          bash build/wineserver/build.sh     # -> app/Madeira/libwineserver.a
+
+      - name: Build FEX for iOS
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # NOT scripted upstream — the author built FEX/build-ios with CMake
+          # against the ios-port-2607 fork. Configure roughly like:
+          #   cmake -S FEX -B FEX/build-ios -G Ninja \
+          #     -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+          #     -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+          #     -DENABLE_STATIC_LIBS=On ...
+          #   cmake --build FEX/build-ios -j
+          echo "Derive exact flags from the FEX fork's CMakeLists (ios-port-2607 branch)"
+
+      - name: Build DXMT
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # Follow build/dxmt-ios/README.md exactly (llvm-mingw PE side via
+          # meson, patched LLVM-15-for-iOS, then ./build.sh + libtool combine).
+          # You may want to cache toolchains/llvm-ios-build between runs too.
+          echo "See build/dxmt-ios/README.md"
+
+      # -------------------- runs every time --------------------
+
+      - name: Supply VC++ runtime folder
+        run: |
+          # The Xcode project copies app/Madeira/x86_64-vcruntime as a resource;
+          # the folder doesn't exist in git. Follow tools/fetch-vcruntime.md.
+          mkdir -p app/Madeira/x86_64-vcruntime
+
+      - name: Build app (unsigned)
+        run: |
+          xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \
+            -configuration Release -sdk iphoneos \
+            -derivedDataPath derived \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="" \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R derived/Build/Products/Release-iphoneos/Madeira.app Payload/
+          zip -qr Madeira.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-unsigned
+          path: Madeira.ipa
