@@ -67,8 +67,6 @@ jobs:
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix libtool)/bin" >> "$GITHUB_PATH"
 
-          echo "$(brew --prefix bison)/bin" >> "$PATH"
-
       # ------------------------------------------------------------
       # Prepare llvm-mingw
       #
