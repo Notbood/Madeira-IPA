@@ -137,8 +137,6 @@ jobs:
 
       - name: Build Wine ARM64EC/ARM64 PE tree
         if: steps.native-cache.outputs.cache-hit != 'true'
-        env:
-          PATH: ${{ github.workspace }}/toolchains/llvm-mingw/bin:${{ env.PATH }}
         run: |
           set -euxo pipefail
           if [ ! -f wine/build-arm64ec/Makefile ]; then
