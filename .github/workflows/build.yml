@@ -149,7 +149,9 @@ jobs:
               --without-x \
               --without-freetype
           fi
-          make -C wine/build-macos -j"$(sysctl -n hw.ncpu)"
+          # configure above leaves this shell inside wine/build-macos, so
+          # use a path relative to the current directory for the build.
+          make -j"$(sysctl -n hw.ncpu)"
 
       - name: Build Wine ARM64EC/ARM64 PE tree
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -169,7 +171,8 @@ jobs:
 
           # The upstream Madeira handoff identifies the ARM64EC PE ntdll
           # build as a required step.
-          make -C wine/build-arm64ec -j"$(sysctl -n hw.ncpu)" dlls/ntdll
+          # configure above leaves this shell inside wine/build-arm64ec.
+          make -j"$(sysctl -n hw.ncpu)" dlls/ntdll
 
       - name: Build GnuTLS, Freetype and Unix Wine libraries
         if: steps.native-cache.outputs.cache-hit != 'true'
