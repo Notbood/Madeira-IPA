@@ -76,6 +76,9 @@ compile_unixlib() {
         SUCCEEDED=$((SUCCEEDED + 1))
     else
         echo "FAILED"
+        echo "----- $OBJ_DIR/$name.err -----"
+        cat "$OBJ_DIR/$name.err"
+        echo "--------------------------------"
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
     fi
