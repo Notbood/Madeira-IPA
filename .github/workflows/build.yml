@@ -162,9 +162,9 @@ jobs:
             --without-freetype
 
       # ============================================================
-      # BUILD WINE IDL TOOLING
+      # BUILD WINE IDL TOOLING + GENERATE dwrite.h
       # ============================================================
-      - name: Build Wine IDL tooling
+      - name: Build Wine IDL tooling and headers
         working-directory: wine/build-arm64ec
         run: |
           set -euxo pipefail
@@ -176,76 +176,43 @@ jobs:
           make -j"$(sysctl -n hw.ncpu)" tools/widl
 
           echo ""
-          echo "Searching for widl:"
-          find . -type f -name widl -print
-
-      # ============================================================
-      # GENERATE WINE HEADERS
-      # ============================================================
-      - name: Generate Wine headers
-        working-directory: wine
-        run: |
-          set -euxo pipefail
-
-          echo "========================================"
-          echo "Generating Wine dwrite.h with widl"
-          echo "========================================"
-
-          echo "Wine source:"
-          pwd
-
-          echo ""
-          echo "Checking dwrite.idl:"
-          test -f include/dwrite.idl
-          ls -lh include/dwrite.idl
-
-          echo ""
-          echo "Checking widl:"
-
-          WIDL="$(find build-arm64ec -type f -name widl -perm -111 -print -quit)"
+          echo "Searching entire Wine tree for widl:"
+          WIDL="$(find .. -type f -name widl -print -quit)"
 
           if [ -z "$WIDL" ]; then
-            echo "ERROR: widl was not found."
-            find build-arm64ec -type f -name widl -print
+            echo "ERROR: widl was not produced."
+            find .. -name '*widl*' -print
             exit 1
           fi
 
           echo "FOUND widl:"
           echo "$WIDL"
 
-          echo ""
-          echo "Preparing Wine header directory:"
-          mkdir -p include/wine/windows
+          chmod +x "$WIDL"
 
           echo ""
-          echo "Generating:"
-          echo "  include/wine/windows/dwrite.h"
+          echo "========================================"
+          echo "Generating dwrite.h"
+          echo "========================================"
+
+          mkdir -p ../include/wine/windows
 
           "$WIDL" \
-            -Iinclude \
-            -Iinclude/wine/windows \
+            -I../include \
+            -I../include/wine/windows \
             -h \
-            -o include/wine/windows/dwrite.h \
-            include/dwrite.idl
+            -o ../include/wine/windows/dwrite.h \
+            ../include/dwrite.idl
 
           echo ""
-          echo "========================================"
-          echo "Checking generated dwrite.h"
-          echo "========================================"
+          echo "Checking generated header:"
 
-          test -f include/wine/windows/dwrite.h
+          test -f ../include/wine/windows/dwrite.h
 
-          echo "SUCCESS:"
-          ls -lh include/wine/windows/dwrite.h
+          ls -lh ../include/wine/windows/dwrite.h
 
           echo ""
-          echo "First lines:"
-          head -n 20 include/wine/windows/dwrite.h
-
-          echo ""
-          echo "========================================"
-          echo "dwrite.h generation successful"
-          echo "========================================"
+          echo "dwrite.h generated successfully."
 
       # ============================================================
       # BUILD WINE NTDLL
