@@ -16,32 +16,36 @@ env:
 
 jobs:
   build:
-    name: Build Madeira IPA
     runs-on: macos-15
     timeout-minutes: 360
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
           submodules: recursive
+          fetch-depth: 0
 
+      # ------------------------------------------------------------
+      # Xcode
+      # ------------------------------------------------------------
       - name: Select Xcode
-        run: |
-          set -euxo pipefail
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.4"
 
-          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
-
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-          xcrun --sdk iphoneos --show-sdk-path
-
-      - name: Install build dependencies
+      # ------------------------------------------------------------
+      # Homebrew dependencies
+      # ------------------------------------------------------------
+      - name: Install dependencies
         run: |
           set -euxo pipefail
 
           brew update
+
           brew install \
             bison \
             cmake \
@@ -52,264 +56,394 @@ jobs:
             libtool \
             pkg-config
 
-          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix llvm-mingw)/bin" >> "$GITHUB_PATH"
-
-      - name: Prepare PATH
+      # ------------------------------------------------------------
+      # PATH setup
+      # ------------------------------------------------------------
+      - name: Configure PATH
         run: |
           set -euxo pipefail
 
-          export PATH="$(brew --prefix bison)/bin:$PATH"
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix libtool)/bin" >> "$GITHUB_PATH"
 
-          if [ -d "$(brew --prefix llvm-mingw)/bin" ]; then
-            export PATH="$(brew --prefix llvm-mingw)/bin:$PATH"
-          fi
+          echo "$(brew --prefix bison)/bin" >> "$PATH"
 
-          if [ -d "$(brew --prefix llvm)/bin" ]; then
-            export PATH="$(brew --prefix llvm)/bin:$PATH"
-          fi
-
-          echo "PATH=$PATH"
-
-          command -v bison
-          command -v cmake
-          command -v ninja
-          command -v meson
-          command -v nasm
-
+      # ------------------------------------------------------------
+      # Prepare llvm-mingw
+      #
+      # IMPORTANT:
+      # macOS uses the macos-universal archive.
+      # Do NOT use the aarch64 archive here.
+      # ------------------------------------------------------------
       - name: Prepare llvm-mingw
-        id: llvm-mingw
         run: |
           set -euxo pipefail
 
           LLVM_MINGW_DIR="$RUNNER_TEMP/llvm-mingw"
           LLVM_MINGW_ARCHIVE="$RUNNER_TEMP/llvm-mingw.tar.xz"
 
-          if [ ! -d "$LLVM_MINGW_DIR" ]; then
-            mkdir -p "$LLVM_MINGW_DIR"
+          rm -rf "$LLVM_MINGW_DIR"
+          mkdir -p "$LLVM_MINGW_DIR"
 
-            curl -L \
-              --retry 5 \
-              --retry-all-errors \
-              -o "$LLVM_MINGW_ARCHIVE" \
-              "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_TAG}/llvm-mingw-${LLVM_MINGW_TAG}-ucrt-aarch64.tar.xz"
+          LLVM_MINGW_URL="https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_TAG}/llvm-mingw-${LLVM_MINGW_TAG}-ucrt-macos-universal.tar.xz"
 
-            tar -xJf "$LLVM_MINGW_ARCHIVE" \
-              --strip-components=1 \
-              -C "$LLVM_MINGW_DIR"
+          echo "========================================"
+          echo "Downloading llvm-mingw"
+          echo "========================================"
+          echo "Version: $LLVM_MINGW_TAG"
+          echo "URL: $LLVM_MINGW_URL"
+
+          curl \
+            --fail \
+            --show-error \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 2 \
+            -o "$LLVM_MINGW_ARCHIVE" \
+            "$LLVM_MINGW_URL"
+
+          echo "========================================"
+          echo "Downloaded llvm-mingw archive"
+          echo "========================================"
+
+          ls -lh "$LLVM_MINGW_ARCHIVE"
+          file "$LLVM_MINGW_ARCHIVE"
+
+          ARCHIVE_SIZE="$(stat -f%z "$LLVM_MINGW_ARCHIVE")"
+
+          echo "Archive size: $ARCHIVE_SIZE bytes"
+
+          if [ "$ARCHIVE_SIZE" -lt 1000000 ]; then
+            echo "ERROR: llvm-mingw archive is suspiciously small."
+            exit 1
           fi
 
-          echo "LLVM_MINGW_DIR=$LLVM_MINGW_DIR" >> "$GITHUB_ENV"
+          tar -xJf "$LLVM_MINGW_ARCHIVE" \
+            --strip-components=1 \
+            -C "$LLVM_MINGW_DIR"
+
+          echo "========================================"
+          echo "llvm-mingw extracted"
+          echo "========================================"
+
+          test -x "$LLVM_MINGW_DIR/bin/aarch64-w64-mingw32-clang"
+
+          "$LLVM_MINGW_DIR/bin/aarch64-w64-mingw32-clang" --version
 
           echo "$LLVM_MINGW_DIR/bin" >> "$GITHUB_PATH"
 
-      - name: Prepare native build cache
+      # ------------------------------------------------------------
+      # Native build cache
+      # ------------------------------------------------------------
+      - name: Restore native build cache
         id: native-cache
         uses: actions/cache@v4
         with:
           path: |
-            toolchains/gnutls-ios
-            build/freetype-ios/build
-            build/ntdll-unix/obj
-            build/win32u-unix/obj
-            build/wineserver-ios/build
-          key: ${{ runner.os }}-native-${{ hashFiles('build/gnutls-ios/**', 'build/freetype-ios/**', 'build/ntdll-unix/**', 'build/win32u-unix/**', 'build/wineserver-ios/**', 'wine/**') }}
+            build
+            toolchains
+            app/Madeira/*.a
+            app/Madeira/*.dylib
+            app/Madeira/*.framework
+          key: madeira-native-${{ runner.os }}-${{ hashFiles('build/**/*.sh', 'build/**/*.c', 'build/**/*.h', 'wine/**/*.h', 'wine/**/*.c') }}
+          restore-keys: |
+            madeira-native-${{ runner.os }}-
 
-      - name: Build Wine ARM64EC/ARM64 PE tree
-        if: steps.native-cache.outputs.cache-hit != 'true'
+      # ------------------------------------------------------------
+      # Build Wine ARM64EC / ARM64 PE tree
+      # ------------------------------------------------------------
+      - name: Configure Wine ARM64EC
+        working-directory: wine
         run: |
           set -euxo pipefail
 
-          export PATH="$(brew --prefix bison)/bin:$PATH"
+          rm -rf build-arm64ec
 
-          if [ ! -f wine/build-arm64ec/Makefile ]; then
-            rm -rf wine/build-arm64ec
-            mkdir -p wine/build-arm64ec
+          mkdir -p build-arm64ec
 
-            cd wine/build-arm64ec
+          cd build-arm64ec
 
-            ../configure \
-              --enable-archs=arm64ec,aarch64 \
-              --without-x \
-              --without-freetype
-          fi
+          ../configure \
+            --enable-archs=arm64ec,aarch64 \
+            --without-x \
+            --without-freetype
 
-          # Generate Wine's IDL-derived headers first. This includes
-          # dwrite.h and related DirectWrite headers required by the
-          # Madeira native iOS dwrite unixlib.
+      # ------------------------------------------------------------
+      # Generate Wine headers / IDL output
+      #
+      # IMPORTANT:
+      # `dwrite.h` is generated by Wine's include target.
+      # This must happen BEFORE dlls/ntdll.
+      # ------------------------------------------------------------
+      - name: Generate Wine headers
+        working-directory: wine/build-arm64ec
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "Generating Wine include files"
+          echo "========================================"
+
           make -j"$(sysctl -n hw.ncpu)" include
 
-          # The ARM64EC PE ntdll build is required by the Madeira
-          # native iOS build.
-          make -j"$(sysctl -n hw.ncpu)" dlls/ntdll
+          echo "========================================"
+          echo "Checking for dwrite.h"
+          echo "========================================"
 
-      - name: Verify Wine ARM64EC build tree
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
+          find . .. -name 'dwrite*.h' -print
 
-          test -f wine/build-arm64ec/Makefile
-          test -f wine/build-arm64ec/include/config.h
-
-          echo "Wine build tree:"
-          echo "  wine/build-arm64ec/Makefile"
-          echo "  wine/build-arm64ec/include/config.h"
-
-          echo "Generated DirectWrite headers:"
-          find wine/build-arm64ec wine -name 'dwrite*.h' -print
-
-      - name: Build GnuTLS, FreeType and Unix Wine libraries
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-
-          echo "=== Building GnuTLS ==="
-          bash build/gnutls-ios/build.sh
-
-          echo ""
-          echo "=== Preparing FreeType 2.13.3 ==="
-
-          if [ ! -d research/freetype ]; then
-            git clone \
-              --depth 1 \
-              --branch VER-2-13-3 \
-              https://github.com/freetype/freetype.git \
-              research/freetype
+          if ! find . .. -name 'dwrite.h' -print -quit | grep -q .; then
+            echo "ERROR: dwrite.h was not generated."
+            exit 1
           fi
 
-          test -f research/freetype/CMakeLists.txt
+      # ------------------------------------------------------------
+      # Build ntdll PE
+      # ------------------------------------------------------------
+      - name: Build Wine ntdll
+        working-directory: wine/build-arm64ec
+        run: |
+          set -euxo pipefail
 
-          echo ""
-          echo "=== Building FreeType ==="
-          bash build/freetype-ios/build.sh
+          make -j"$(sysctl -n hw.ncpu)" dlls/ntdll
 
-          test -s build/freetype-ios/build/libfreetype.a
+      # ------------------------------------------------------------
+      # Verify generated Wine configuration
+      # ------------------------------------------------------------
+      - name: Verify Wine build
+        run: |
+          set -euxo pipefail
 
-          echo ""
-          echo "=== Verifying Wine build configuration ==="
+          echo "========================================"
+          echo "Wine build verification"
+          echo "========================================"
+
           test -f wine/build-arm64ec/include/config.h
 
-          echo ""
-          echo "=== Building ntdll Unix ==="
-          bash build/ntdll-unix/build.sh
+          echo "config.h:"
+          ls -lh wine/build-arm64ec/include/config.h
 
           echo ""
-          echo "=== Building win32u Unix ==="
-          bash build/win32u-unix/build.sh
+          echo "Generated dwrite headers:"
+          find wine/build-arm64ec wine -name 'dwrite*.h' -print
 
-          echo ""
-          echo "=== Building wineserver ==="
-          bash build/wineserver-ios/build.sh
+      # ------------------------------------------------------------
+      # Build GnuTLS
+      # ------------------------------------------------------------
+      - name: Build GnuTLS
+        run: |
+          set -euxo pipefail
 
+          chmod +x build/gnutls-ios/build.sh
+          build/gnutls-ios/build.sh
+
+      # ------------------------------------------------------------
+      # Prepare FreeType source
+      # ------------------------------------------------------------
+      - name: Prepare FreeType source
+        run: |
+          set -euxo pipefail
+
+          rm -rf research/freetype
+
+          mkdir -p research
+
+          git clone \
+            --depth 1 \
+            --branch VER-2-13-3 \
+            https://github.com/freetype/freetype.git \
+            research/freetype
+
+          test -f research/freetype/include/freetype/freetype.h
+
+      # ------------------------------------------------------------
+      # Build FreeType for iOS
+      # ------------------------------------------------------------
+      - name: Build FreeType
+        run: |
+          set -euxo pipefail
+
+          chmod +x build/freetype-ios/build.sh
+          build/freetype-ios/build.sh
+
+      # ------------------------------------------------------------
+      # Build ntdll unix library
+      # ------------------------------------------------------------
+      - name: Build ntdll unix
+        run: |
+          set -euxo pipefail
+
+          chmod +x build/ntdll-unix/build.sh
+          build/ntdll-unix/build.sh
+
+      # ------------------------------------------------------------
+      # Build win32u unix library
+      # ------------------------------------------------------------
+      - name: Build win32u unix
+        run: |
+          set -euxo pipefail
+
+          chmod +x build/win32u-unix/build.sh
+          build/win32u-unix/build.sh
+
+      # ------------------------------------------------------------
+      # Build wineserver
+      # ------------------------------------------------------------
+      - name: Build wineserver
+        run: |
+          set -euxo pipefail
+
+          chmod +x build/wineserver-ios/build.sh
+          build/wineserver-ios/build.sh
+
+      # ------------------------------------------------------------
+      # Build FEX
+      # ------------------------------------------------------------
       - name: Build FEX
-        if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
 
-          bash build/fex-ios/build.sh
+          chmod +x build/fex-ios/build.sh
+          build/fex-ios/build.sh
 
+      # ------------------------------------------------------------
+      # Build DXMT
+      # ------------------------------------------------------------
       - name: Build DXMT
-        if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
 
-          bash build/dxmt-ios/build.sh
+          chmod +x build/dxmt-ios/build.sh
+          build/dxmt-ios/build.sh
 
+      # ------------------------------------------------------------
+      # Verify VC++ runtime
+      # ------------------------------------------------------------
       - name: Verify VC++ runtime
         run: |
           set -euxo pipefail
 
-          echo "=== Checking VC++ runtime ==="
+          echo "========================================"
+          echo "Searching for VC++ runtime"
+          echo "========================================"
 
-          if [ -d "research/vcruntime" ]; then
-            find research/vcruntime -maxdepth 3 -type f -print
-          fi
+          find . \
+            \( -iname 'vcruntime*.dll' \
+            -o -iname 'msvcp*.dll' \
+            -o -iname 'ucrtbase*.dll' \) \
+            -print
 
-          if [ -d "app/Madeira/vcruntime" ]; then
-            find app/Madeira/vcruntime -maxdepth 3 -type f -print
-          fi
-
+      # ------------------------------------------------------------
+      # Validate native libraries
+      # ------------------------------------------------------------
       - name: Validate native libraries
         run: |
           set -euxo pipefail
 
-          echo "=== Validating native libraries ==="
+          echo "========================================"
+          echo "Validating native libraries"
+          echo "========================================"
 
-          test -s build/freetype-ios/build/libfreetype.a
-          test -s app/Madeira/libntdll_unix.a
-          test -s app/Madeira/libwin32u_unix.a
-
-          echo "Native libraries:"
-          ls -lh \
-            build/freetype-ios/build/libfreetype.a \
-            app/Madeira/libntdll_unix.a \
-            app/Madeira/libwin32u_unix.a
+          find app/Madeira \
+            -maxdepth 2 \
+            -type f \
+            \( -name '*.a' -o -name '*.dylib' -o -name '*.framework' \) \
+            -print
 
           echo ""
-          echo "Architectures:"
-          lipo -info build/freetype-ios/build/libfreetype.a || true
-          lipo -info app/Madeira/libntdll_unix.a || true
-          lipo -info app/Madeira/libwin32u_unix.a || true
+          echo "Checking libntdll_unix.a"
 
-      - name: Build unsigned Madeira app
+          test -f app/Madeira/libntdll_unix.a
+
+          ls -lh app/Madeira/libntdll_unix.a
+
+          file app/Madeira/libntdll_unix.a
+
+      # ------------------------------------------------------------
+      # Build unsigned Xcode application
+      # ------------------------------------------------------------
+      - name: Build unsigned iOS app
         run: |
           set -euxo pipefail
 
-          echo "=== Building unsigned Xcode application ==="
+          echo "========================================"
+          echo "Building unsigned Madeira iOS app"
+          echo "========================================"
 
           xcodebuild \
-            -project app/Madeira/Madeira.xcodeproj \
+            -project Madeira.xcodeproj \
             -scheme Madeira \
             -configuration Release \
             -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            DEVELOPMENT_TEAM="" \
+            -destination generic/platform=iOS \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
             PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
             IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
-            build
+            clean build
 
-      - name: Package unsigned IPA
+      # ------------------------------------------------------------
+      # Locate built .app
+      # ------------------------------------------------------------
+      - name: Locate application
+        id: locate-app
         run: |
           set -euxo pipefail
 
-          echo "=== Packaging IPA ==="
+          echo "========================================"
+          echo "Searching for Madeira.app"
+          echo "========================================"
 
-          APP_PATH="$(find "$PWD" \
-            -path '*/Build/Products/Release-iphoneos/*.app' \
-            -type d \
-            -print -quit)"
+          APP_PATH="$(find . -type d -name 'Madeira.app' -path '*Build/Products/Release-iphoneos/*' -print -quit)"
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: Could not find built .app"
-            find "$PWD" -path '*Release-iphoneos*' -print
+            echo "ERROR: Madeira.app was not found."
+            find . -type d -name '*.app' -print
             exit 1
           fi
 
-          echo "Found app:"
+          echo "Found:"
           echo "$APP_PATH"
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------
+      # Package unsigned IPA
+      # ------------------------------------------------------------
+      - name: Package IPA
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "Packaging unsigned IPA"
+          echo "========================================"
 
           rm -rf Payload
           mkdir -p Payload
 
-          cp -R "$APP_PATH" Payload/
+          cp -R "$APP_PATH" Payload/Madeira.app
 
-          rm -f Madeira-unsigned.ipa
+          rm -rf Madeira-unsigned.ipa
 
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
-            Payload \
-            Madeira-unsigned.ipa
-
-          test -s Madeira-unsigned.ipa
+          /usr/bin/zip \
+            -qry \
+            Madeira-unsigned.ipa \
+            Payload
 
           echo ""
-          echo "IPA:"
+          echo "IPA created:"
           ls -lh Madeira-unsigned.ipa
 
-      - name: Upload IPA artifact
+          file Madeira-unsigned.ipa
+
+      # ------------------------------------------------------------
+      # Upload IPA
+      # ------------------------------------------------------------
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Madeira-unsigned-IPA
