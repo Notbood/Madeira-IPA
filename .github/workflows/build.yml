@@ -173,15 +173,21 @@ jobs:
           echo "Building Wine IDL tooling"
           echo "========================================"
 
-          make -j"$(sysctl -n hw.ncpu)" tools/widl
+          make -j"$(sysctl -n hw.ncpu)" tools/widl/widl
 
           echo ""
-          echo "Searching entire Wine tree for widl:"
-          WIDL="$(find .. -type f -name widl -print -quit)"
+          echo "Searching for widl executable:"
+
+          WIDL="$(find . -type f -name widl -perm -111 -print -quit)"
 
           if [ -z "$WIDL" ]; then
-            echo "ERROR: widl was not produced."
-            find .. -name '*widl*' -print
+            echo "ERROR: widl executable was not produced."
+            echo ""
+            echo "tools/widl contents:"
+            ls -la tools/widl || true
+            echo ""
+            echo "All widl-related files:"
+            find . -iname '*widl*' -print
             exit 1
           fi
 
