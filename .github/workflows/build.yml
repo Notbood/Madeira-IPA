@@ -53,7 +53,7 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euxo pipefail
-          brew install cmake ninja meson nasm python-setuptools libtool pkg-config
+          brew install bison cmake ninja meson nasm python-setuptools libtool pkg-config
 
       # llvm-mingw supplies the ARM64EC PE compiler used by Wine/DXMT.
       - name: Cache llvm-mingw
@@ -78,6 +78,10 @@ jobs:
       - name: Add toolchains to PATH
         run: |
           set -euxo pipefail
+          # Homebrew's bison is keg-only on macOS because Apple ships an
+          # older /usr/bin/bison. Wine requires bison >= 3.0, so put the
+          # Homebrew version first on PATH for configure/build steps.
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
           echo "$GITHUB_WORKSPACE/toolchains/llvm-mingw/bin" >> "$GITHUB_PATH"
           echo "$GITHUB_WORKSPACE/toolchains/llvm-mingw" >> "$GITHUB_PATH"
           echo "$HOMEBREW_PREFIX/opt/libtool/libexec/gnubin" >> "$GITHUB_PATH"
@@ -131,6 +135,11 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+          # Defensive PATH fix: Homebrew bison is keg-only, and Wine's
+          # configure must see bison >= 3.0 rather than Apple's old bison.
+          export PATH="$(brew --prefix bison)/bin:$PATH"
+          echo "Using bison: $(command -v bison)"
+          bison --version | head -n 1
           if [ ! -f wine/build-macos/Makefile ]; then
             rm -rf wine/build-macos
             mkdir -p wine/build-macos
