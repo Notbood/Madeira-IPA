@@ -180,50 +180,67 @@ jobs:
           find . -type f -name widl -print
 
       # ============================================================
-      # GENERATE dwrite.h
+      # GENERATE WINE HEADERS
       # ============================================================
       - name: Generate Wine headers
-        working-directory: wine/build-arm64ec
+        working-directory: wine
         run: |
           set -euxo pipefail
 
           echo "========================================"
-          echo "Generating dwrite.h with Wine build system"
+          echo "Generating Wine dwrite.h with widl"
           echo "========================================"
 
+          echo "Wine source:"
+          pwd
+
+          echo ""
+          echo "Checking dwrite.idl:"
+          test -f include/dwrite.idl
+          ls -lh include/dwrite.idl
+
+          echo ""
           echo "Checking widl:"
-          find . -type f -name widl -print
 
-          echo ""
-          echo "Building the specific dwrite.h target..."
+          WIDL="$(find build-arm64ec -type f -name widl -perm -111 -print -quit)"
 
-          make -j"$(sysctl -n hw.ncpu)" include/wine/windows/dwrite.h
-
-          echo ""
-          echo "========================================"
-          echo "Searching for generated dwrite.h"
-          echo "========================================"
-
-          find . .. -name 'dwrite.h' -print
-
-          echo ""
-          echo "Checking expected locations:"
-
-          find . -path '*wine/windows/dwrite.h' -print
-
-          echo ""
-          echo "Verifying dwrite.h exists..."
-
-          DWRT_HEADER="$(find . .. -name 'dwrite.h' -print -quit)"
-
-          if [ -z "$DWRT_HEADER" ]; then
-            echo "ERROR: Wine failed to generate dwrite.h."
+          if [ -z "$WIDL" ]; then
+            echo "ERROR: widl was not found."
+            find build-arm64ec -type f -name widl -print
             exit 1
           fi
 
-          echo "FOUND: $DWRT_HEADER"
+          echo "FOUND widl:"
+          echo "$WIDL"
 
-          ls -lh "$DWRT_HEADER"
+          echo ""
+          echo "Preparing Wine header directory:"
+          mkdir -p include/wine/windows
+
+          echo ""
+          echo "Generating:"
+          echo "  include/wine/windows/dwrite.h"
+
+          "$WIDL" \
+            -Iinclude \
+            -Iinclude/wine/windows \
+            -h \
+            -o include/wine/windows/dwrite.h \
+            include/dwrite.idl
+
+          echo ""
+          echo "========================================"
+          echo "Checking generated dwrite.h"
+          echo "========================================"
+
+          test -f include/wine/windows/dwrite.h
+
+          echo "SUCCESS:"
+          ls -lh include/wine/windows/dwrite.h
+
+          echo ""
+          echo "First lines:"
+          head -n 20 include/wine/windows/dwrite.h
 
           echo ""
           echo "========================================"
