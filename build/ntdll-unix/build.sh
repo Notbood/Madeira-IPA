@@ -41,6 +41,9 @@ compile_one() {
         SUCCEEDED=$((SUCCEEDED + 1))
     else
         echo "FAILED"
+        echo "----- $OBJ_DIR/$name.err -----"
+        cat "$OBJ_DIR/$name.err"
+        echo "--------------------------------"
         FAILED=$((FAILED + 1))
         FAILED_FILES="$FAILED_FILES $name"
     fi
@@ -54,10 +57,15 @@ compile_one() {
 # route dlopen/dlsym at the static symtab (gnutls_symtab_ios.c).
 CRYPTO_DIR="$REPO_ROOT/build/crypto-unix"
 GNUTLS_PREFIX="$REPO_ROOT/toolchains/gnutls-ios"
+
 compile_unixlib() {
-    local src=$1 name=$2 prefix=$3
+    local src=$1
+    local name=$2
+    local prefix=$3
     shift 3
+
     echo -n "  $name... "
+
     if xcrun -sdk iphoneos clang \
         -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
         -O2 -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
@@ -75,7 +83,7 @@ compile_unixlib() {
         echo "OK"
         SUCCEEDED=$((SUCCEEDED + 1))
     else
-        echo "FAI LED"
+        echo "FAILED"
         echo "----- $OBJ_DIR/$name.err -----"
         cat "$OBJ_DIR/$name.err"
         echo "--------------------------------"
@@ -85,6 +93,9 @@ compile_unixlib() {
 }
 
 echo "=== Building ntdll unix (iOS) ==="
+echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+echo "UPDATED NTDLL-UNIX BUILD.SH IS RUNNING"
+echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 
 # iOS-Madeira 2026-05-13: silent audio driver — provides a null
 # IAudioClock that advances at real time so FMOD's audio-gated rhythm
@@ -94,15 +105,22 @@ compile_one "$BUILD_DIR/audio_null_ios.c" "audio_null_ios"
 # iOS-Madeira 2026-07-05 (Steam S0): network + crypto unix sides.
 echo "=== Building crypto/network unixlibs ==="
 "$CRYPTO_DIR/gen_gnutls_symtab.sh" > /dev/null
+
 compile_one "$CRYPTO_DIR/gnutls_symtab_ios.c" "gnutls_symtab_ios"
+
 compile_unixlib "$WINE_SRC/dlls/ws2_32/unixlib.c" "ws2_32_unixlib" "ws2_32" \
     -I"$WINE_SRC/dlls/ws2_32"
+
 compile_unixlib "$WINE_SRC/dlls/bcrypt/gnutls.c" "bcrypt_unixlib" "bcrypt" \
-    -I"$WINE_SRC/dlls/bcrypt" -I"$GNUTLS_PREFIX/include" \
+    -I"$WINE_SRC/dlls/bcrypt" \
+    -I"$GNUTLS_PREFIX/include" \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h"
+
 compile_unixlib "$WINE_SRC/dlls/secur32/schannel_gnutls.c" "secur32_unixlib" "secur32" \
-    -I"$WINE_SRC/dlls/secur32" -I"$GNUTLS_PREFIX/include" \
+    -I"$WINE_SRC/dlls/secur32" \
+    -I"$GNUTLS_PREFIX/include" \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h"
+
 # iOS-Madeira ml494 (#61 text wall): dwrite had NO unixlib, so every
 # __wine_unix_call from dwrite.dll failed and get_glyph_bbox never ran —
 # every glyph run reported an EMPTY bbox and Chromium drew no text at all.
@@ -110,11 +128,15 @@ compile_unixlib "$WINE_SRC/dlls/secur32/schannel_gnutls.c" "secur32_unixlib" "se
 # dwrite.h/dwrite_3.h are widl-generated and only exist in the arm64ec
 # build tree, so that include dir is named explicitly here.
 compile_unixlib "$BUILD_DIR/dwrite_freetype_ios.c" "dwrite_unixlib" "dwrite" \
-    -I"$WINE_SRC/dlls/dwrite" -I"$REPO_ROOT/research/freetype/include" \
+    -I"$WINE_SRC/dlls/dwrite" \
+    -I"$REPO_ROOT/research/freetype/include" \
     -I"$REPO_ROOT/wine/build-arm64ec/include"
+
 compile_unixlib "$CRYPTO_DIR/crypt32_unixlib_ios.c" "crypt32_unixlib" "crypt32" \
-    -I"$WINE_SRC/dlls/crypt32" -I"$GNUTLS_PREFIX/include" \
+    -I"$WINE_SRC/dlls/crypt32" \
+    -I"$GNUTLS_PREFIX/include" \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h"
+
 # iOS-Madeira 2026-08-03 (#79 transport): in-process NSI TCP connection
 # tables (nsiproxy.sys is not shipped; PE nsi.dll falls back to this).
 compile_one "$BUILD_DIR/nsi_unixlib_ios.c" "nsi_unixlib_ios"
@@ -156,25 +178,48 @@ done
 
 echo ""
 echo "Results: $SUCCEEDED succeeded, $FAILED failed"
+
 if [ -n "$FAILED_FILES" ]; then
     echo "Failed:$FAILED_FILES"
 fi
 
 echo ""
 echo "=== Building libntdll_unix.a ==="
+
 ar rcs "$OBJ_DIR/libntdll_unix.a" \
-    "$OBJ_DIR/audio_null_ios.o" "$OBJ_DIR/nsi_unixlib_ios.o" \
-    "$OBJ_DIR/gnutls_symtab_ios.o" "$OBJ_DIR/ws2_32_unixlib.o" \
-    "$OBJ_DIR/bcrypt_unixlib.o" "$OBJ_DIR/secur32_unixlib.o" "$OBJ_DIR/crypt32_unixlib.o" \
+    "$OBJ_DIR/audio_null_ios.o" \
+    "$OBJ_DIR/nsi_unixlib_ios.o" \
+    "$OBJ_DIR/gnutls_symtab_ios.o" \
+    "$OBJ_DIR/ws2_32_unixlib.o" \
+    "$OBJ_DIR/bcrypt_unixlib.o" \
+    "$OBJ_DIR/secur32_unixlib.o" \
+    "$OBJ_DIR/crypt32_unixlib.o" \
     "$OBJ_DIR/dwrite_unixlib.o" \
-    "$OBJ_DIR/cdrom.o" "$OBJ_DIR/debug.o" "$OBJ_DIR/env.o" "$OBJ_DIR/file.o" \
-    "$OBJ_DIR/loader.o" "$OBJ_DIR/loadorder.o" "$OBJ_DIR/process.o" "$OBJ_DIR/registry.o" \
-    "$OBJ_DIR/security.o" "$OBJ_DIR/serial.o" "$OBJ_DIR/server.o" \
-    "$OBJ_DIR/signal_arm.o" "$OBJ_DIR/signal_arm64.o" "$OBJ_DIR/signal_i386.o" "$OBJ_DIR/signal_x86_64.o" \
-    "$OBJ_DIR/socket.o" "$OBJ_DIR/sync.o" "$OBJ_DIR/syscall.o" "$OBJ_DIR/system.o" \
-    "$OBJ_DIR/tape.o" "$OBJ_DIR/thread.o" "$OBJ_DIR/virtual.o"
+    "$OBJ_DIR/cdrom.o" \
+    "$OBJ_DIR/debug.o" \
+    "$OBJ_DIR/env.o" \
+    "$OBJ_DIR/file.o" \
+    "$OBJ_DIR/loader.o" \
+    "$OBJ_DIR/loadorder.o" \
+    "$OBJ_DIR/process.o" \
+    "$OBJ_DIR/registry.o" \
+    "$OBJ_DIR/security.o" \
+    "$OBJ_DIR/serial.o" \
+    "$OBJ_DIR/server.o" \
+    "$OBJ_DIR/signal_arm.o" \
+    "$OBJ_DIR/signal_arm64.o" \
+    "$OBJ_DIR/signal_i386.o" \
+    "$OBJ_DIR/signal_x86_64.o" \
+    "$OBJ_DIR/socket.o" \
+    "$OBJ_DIR/sync.o" \
+    "$OBJ_DIR/syscall.o" \
+    "$OBJ_DIR/system.o" \
+    "$OBJ_DIR/tape.o" \
+    "$OBJ_DIR/thread.o" \
+    "$OBJ_DIR/virtual.o"
 
 echo "Copying to app..."
 cp "$OBJ_DIR/libntdll_unix.a" "$APP_LIB"
+
 echo "libntdll_unix.a: $(wc -c < "$APP_LIB" | tr -d ' ') bytes"
 echo "Done!"
