@@ -180,7 +180,7 @@ jobs:
           find . -type f -name widl -print
 
       # ============================================================
-      # BUILD WINE INCLUDE TARGET
+      # GENERATE dwrite.h
       # ============================================================
       - name: Generate Wine headers
         working-directory: wine/build-arm64ec
@@ -188,21 +188,47 @@ jobs:
           set -euxo pipefail
 
           echo "========================================"
-          echo "Building Wine include target"
+          echo "Generating dwrite.h with Wine build system"
           echo "========================================"
 
-          make -j"$(sysctl -n hw.ncpu)" include
+          echo "Checking widl:"
+          find . -type f -name widl -print
+
+          echo ""
+          echo "Building the specific dwrite.h target..."
+
+          make -j"$(sysctl -n hw.ncpu)" include/wine/windows/dwrite.h
 
           echo ""
           echo "========================================"
-          echo "Searching for generated dwrite headers"
+          echo "Searching for generated dwrite.h"
           echo "========================================"
 
-          find . .. -name 'dwrite*.h' -print
+          find . .. -name 'dwrite.h' -print
 
           echo ""
-          echo "Checking for dwrite.h anywhere in Wine:"
-          find .. -name 'dwrite.h' -print
+          echo "Checking expected locations:"
+
+          find . -path '*wine/windows/dwrite.h' -print
+
+          echo ""
+          echo "Verifying dwrite.h exists..."
+
+          DWRT_HEADER="$(find . .. -name 'dwrite.h' -print -quit)"
+
+          if [ -z "$DWRT_HEADER" ]; then
+            echo "ERROR: Wine failed to generate dwrite.h."
+            exit 1
+          fi
+
+          echo "FOUND: $DWRT_HEADER"
+
+          ls -lh "$DWRT_HEADER"
+
+          echo ""
+          echo "========================================"
+          echo "dwrite.h generation successful"
+          echo "========================================"
 
       # ============================================================
       # BUILD WINE NTDLL
