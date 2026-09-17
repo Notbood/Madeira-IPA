@@ -33,8 +33,7 @@ jobs:
           fetch-depth: 1
 
       # Pin Xcode rather than relying on whatever Xcode happens to be
-      # selected on the runner. The old workflow failed before compilation
-      # because its xcodebuild did not implement -downloadComponent.
+      # selected on the runner.
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -68,29 +67,40 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p toolchains
+
           curl -fL \
             "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_TAG}/llvm-mingw-${LLVM_MINGW_TAG}-ucrt-macos-universal.tar.xz" \
             -o /tmp/llvm-mingw.tar.xz
+
           tar -xJf /tmp/llvm-mingw.tar.xz -C /tmp
+
           rm -rf toolchains/llvm-mingw
-          mv "/tmp/llvm-mingw-${LLVM_MINGW_TAG}-ucrt-macos-universal" toolchains/llvm-mingw
+
+          mv \
+            "/tmp/llvm-mingw-${LLVM_MINGW_TAG}-ucrt-macos-universal" \
+            toolchains/llvm-mingw
 
       - name: Add toolchains to PATH
         run: |
           set -euxo pipefail
+
           # Homebrew's bison is keg-only on macOS because Apple ships an
           # older /usr/bin/bison. Wine requires bison >= 3.0, so put the
           # Homebrew version first on PATH for configure/build steps.
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
           echo "$GITHUB_WORKSPACE/toolchains/llvm-mingw/bin" >> "$GITHUB_PATH"
           echo "$GITHUB_WORKSPACE/toolchains/llvm-mingw" >> "$GITHUB_PATH"
+
           echo "$HOMEBREW_PREFIX/opt/libtool/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Verify ARM64EC compiler
         run: |
           set -euxo pipefail
+
           command -v arm64ec-w64-mingw32-clang
           command -v arm64ec-w64-mingw32-widl
+
           arm64ec-w64-mingw32-clang --version
           arm64ec-w64-mingw32-widl --version || true
 
@@ -98,7 +108,9 @@ jobs:
         id: source
         run: |
           set -euxo pipefail
-          echo "sha=$(git submodule status --recursive | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+          echo "sha=$(git submodule status --recursive | shasum -a 256 | awk '{print $1}')" \
+            >> "$GITHUB_OUTPUT"
 
       - name: Cache Madeira native build products
         id: native-cache
@@ -122,67 +134,120 @@ jobs:
             app/Madeira/libdxmt_combined.a
           key: madeira-native-${{ steps.source.outputs.sha }}-xcode16.4
 
-      # The previous workflow used:
-      #   xcodebuild -downloadComponent MetalToolchain
-      # which is not a valid option on xcodebuild shipped by the
-      # failing runner. Do not call it here.
-      #
       # DXMT's own build machinery is responsible for using the installed
       # Metal toolchain.
+      #
+      # Do NOT use:
+      #   xcodebuild -downloadComponent MetalToolchain
+      #
+      # The Xcode version on the runner does not support that invocation.
 
-      # Do NOT build a generic Wine macOS host tree here. Madeira's iOS fork
-      # adds iOS-specific unix-side symbols (for example the win32u srcwatch
-      # hooks), and the generic Wine host link does not provide them. The
+      # Do NOT build a generic Wine macOS host tree here.
+      #
+      # Madeira's iOS fork adds iOS-specific unix-side symbols and the
       # official build is split into dedicated iOS native-library scripts.
 
       - name: Build Wine ARM64EC/ARM64 PE tree
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+
           if [ ! -f wine/build-arm64ec/Makefile ]; then
             rm -rf wine/build-arm64ec
             mkdir -p wine/build-arm64ec
+
             cd wine/build-arm64ec
+
             ../configure \
               --enable-archs=arm64ec,aarch64 \
               --without-x \
               --without-freetype
           fi
 
-          # The upstream Madeira handoff identifies the ARM64EC PE ntdll
-          # build as a required step.
-          # configure above leaves this shell inside wine/build-arm64ec.
+          # The ARM64EC PE ntdll build is required by the Madeira
+          # native iOS build.
           make -j"$(sysctl -n hw.ncpu)" dlls/ntdll
 
-      - name: Build GnuTLS, Freetype and Unix Wine libraries
+      - name: Verify Wine ARM64EC build tree
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
 
+          test -f wine/build-arm64ec/Makefile
+          test -f wine/build-arm64ec/include/config.h
+
+          echo "Wine build tree:"
+          echo "  wine/build-arm64ec/Makefile"
+          echo "  wine/build-arm64ec/include/config.h"
+
+      - name: Build GnuTLS, FreeType and Unix Wine libraries
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+
+          echo "=== Building GnuTLS ==="
           bash build/gnutls-ios/build.sh
 
-          # FreeType is not included in the repository checkout.
-          # build/freetype-ios/build.sh expects this exact source tree.
-          git clone --depth 1 --branch VER-2-13-3 \
-            https://github.com/freetype/freetype.git \
-            research/freetype
+          echo ""
+          echo "=== Preparing FreeType 2.13.3 ==="
 
+          # build/freetype-ios/build.sh expects the source tree at:
+          #   research/freetype
+          #
+          # FreeType 2.13.3 is used by the Madeira iOS build.
+          if [ ! -d research/freetype ]; then
+            git clone \
+              --depth 1 \
+              --branch VER-2-13-3 \
+              https://github.com/freetype/freetype.git \
+              research/freetype
+          fi
+
+          test -f research/freetype/CMakeLists.txt
+
+          echo ""
+          echo "=== Building FreeType ==="
           bash build/freetype-ios/build.sh
+
+          test -s build/freetype-ios/build/libfreetype.a
+
+          echo ""
+          echo "=== Verifying Wine build configuration ==="
+          test -f wine/build-arm64ec/include/config.h
+
+          echo ""
+          echo "=== Building ntdll Unix ==="
           bash build/ntdll-unix/build.sh
+
+          echo ""
+          echo "=== Building win32u Unix ==="
           bash build/win32u-unix/build.sh
+
+          echo ""
+          echo "=== Building wineserver ==="
           bash build/wineserver/build.sh
+
+      - name: Verify ntdll Unix library
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+
+          test -s app/Madeira/libntdll_unix.a
+          file app/Madeira/libntdll_unix.a
 
       - name: Build FEX for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
 
-          # FEX is an iOS fork in this repository. The upstream Madeira
-          # handoff confirms FEX/build-ios as the required native tree.
+          # FEX is an iOS fork in this repository.
           #
-          # Keep this configuration explicit so CMake cannot silently build
-          # a macOS host target.
-          cmake -S FEX -B FEX/build-ios -G Ninja \
+          # Keep this configuration explicit so CMake cannot silently
+          # build a macOS host target.
+          cmake \
+            -S FEX \
+            -B FEX/build-ios \
+            -G Ninja \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -191,7 +256,9 @@ jobs:
             -DENABLE_STATIC_LIBS=ON \
             -DBUILD_TESTING=OFF
 
-          cmake --build FEX/build-ios -j"$(sysctl -n hw.ncpu)"
+          cmake \
+            --build FEX/build-ios \
+            -j"$(sysctl -n hw.ncpu)"
 
       - name: Build DXMT for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -199,59 +266,83 @@ jobs:
           set -euxo pipefail
 
           # Upstream Madeira identifies build/dxmt-ios/build.sh + libtool
-          # combination as the DXMT build chain. Do not substitute the
-          # generic upstream DXMT macOS build.
+          # combination as the DXMT build chain.
           bash build/dxmt-ios/build.sh
 
           if [ -f build/dxmt-ios/libdxmt_unix.a ] && \
              [ -f build/dxmt-ios/libdxmt_combined.a ]; then
+
             echo "DXMT static libraries were produced."
+
           else
+
             echo "ERROR: DXMT build completed without the expected static libraries."
-            find build/dxmt-ios -maxdepth 2 -type f -print | sort || true
+
+            find \
+              build/dxmt-ios \
+              -maxdepth 2 \
+              -type f \
+              -print \
+              | sort || true
+
             exit 1
           fi
 
       - name: Supply VC++ runtime folder
         run: |
           set -euxo pipefail
+
           mkdir -p app/Madeira/x86_64-vcruntime
 
           # Madeira intentionally does not ship Microsoft's VC++ runtime DLLs.
-          # Do NOT put arbitrary DLLs here. Obtain the unmodified redistributable
-          # separately under Microsoft's redistribution terms, then place the
-          # required DLLs in app/Madeira/x86_64-vcruntime before running this
-          # workflow.
+          #
+          # Do NOT put arbitrary DLLs here. Obtain the unmodified
+          # redistributable separately under Microsoft's redistribution terms,
+          # then place the required DLLs in:
+          #
+          #   app/Madeira/x86_64-vcruntime
+          #
+          # before running this workflow.
           #
           # We fail here instead of producing an IPA with an empty runtime
           # directory, because that IPA would not be a meaningful build.
+
           shopt -s nullglob
           dlls=(app/Madeira/x86_64-vcruntime/*.dll)
+
           if [ "${#dlls[@]}" -eq 0 ]; then
             echo "No VC++ runtime DLLs found."
             echo "See tools/fetch-vcruntime.md in the Madeira source tree."
             echo "Supply the required unmodified Microsoft redistributables and rerun."
             exit 1
           fi
+
           printf '%s\n' "${dlls[@]}"
 
       - name: Verify required native libraries
         run: |
           set -euxo pipefail
+
           required=(
             app/Madeira/libntdll_unix.a
             app/Madeira/libwin32u_unix.a
             app/Madeira/libwineserver.a
             app/Madeira/libdxmt_combined.a
           )
+
           for f in "${required[@]}"; do
-            test -s "$f" || { echo "Missing/empty: $f"; exit 1; }
+            test -s "$f" || {
+              echo "Missing/empty: $f"
+              exit 1
+            }
+
             file "$f"
           done
 
       - name: Show Xcode project targets
         run: |
           set -euxo pipefail
+
           xcodebuild \
             -project app/Madeira.xcodeproj \
             -list
@@ -259,6 +350,7 @@ jobs:
       - name: Build Madeira app (unsigned)
         run: |
           set -euxo pipefail
+
           rm -rf derived
 
           xcodebuild \
@@ -277,25 +369,44 @@ jobs:
       - name: Locate and validate Madeira.app
         run: |
           set -euxo pipefail
-          APP_PATH="$(find derived/Build/Products -maxdepth 3 -type d -name Madeira.app -print -quit)"
+
+          APP_PATH="$(
+            find derived/Build/Products \
+              -maxdepth 3 \
+              -type d \
+              -name Madeira.app \
+              -print \
+              -quit
+          )"
+
           test -n "$APP_PATH"
           test -f "$APP_PATH/Info.plist"
           test -f "$APP_PATH/Madeira"
+
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
           echo "Built app: $APP_PATH"
+
           file "$APP_PATH/Madeira"
 
       - name: Package unsigned IPA
         run: |
           set -euxo pipefail
+
           rm -rf Payload Madeira.ipa
+
           mkdir -p Payload
+
           cp -R "$APP_PATH" Payload/Madeira.app
+
           /usr/bin/zip -qry Madeira.ipa Payload
+
           rm -rf Payload
 
           test -s Madeira.ipa
+
           ls -lh Madeira.ipa
+
           shasum -a 256 Madeira.ipa | tee Madeira.ipa.sha256
 
       - name: Upload unsigned IPA
@@ -317,6 +428,7 @@ jobs:
             echo "**Xcode:**"
             xcodebuild -version | head -2
             echo
+
             if [ -f Madeira.ipa ]; then
               echo "**IPA:** generated"
               echo "**SHA-256:** \`$(shasum -a 256 Madeira.ipa | awk '{print $1}')\`"
