@@ -177,7 +177,6 @@ jobs:
 
           echo ""
           echo "Searching for widl executable:"
-
           WIDL="$(find . -type f -name widl -perm -111 -print -quit)"
 
           if [ -z "$WIDL" ]; then
@@ -203,22 +202,25 @@ jobs:
           echo "Discovering Wine IDL files"
           echo "========================================"
 
-          mapfile -t IDL_FILES < <(
-            find ../include \
-              -maxdepth 1 \
-              -type f \
-              -name '*.idl' \
-              -print \
-              | sort
-          )
+          IDL_COUNT=0
 
-          if [ "${#IDL_FILES[@]}" -eq 0 ]; then
+          while IFS= read -r IDL; do
+            IDL_FILES[$IDL_COUNT]="$IDL"
+            IDL_COUNT=$((IDL_COUNT + 1))
+          done <<EOF
+          $(find ../include -maxdepth 1 -type f -name '*.idl' -print | sort)
+          EOF
+
+          if [ "$IDL_COUNT" -eq 0 ]; then
             echo "ERROR: No Wine IDL files were found."
             exit 1
           fi
 
-          echo "Found ${#IDL_FILES[@]} IDL files:"
-          printf '  %s\n' "${IDL_FILES[@]}"
+          echo "Found $IDL_COUNT IDL files:"
+
+          for IDL in "${IDL_FILES[@]}"; do
+            echo "  $IDL"
+          done
 
           echo ""
           echo "========================================"
