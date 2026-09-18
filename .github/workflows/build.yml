@@ -162,7 +162,7 @@ jobs:
             --without-freetype
 
       # ============================================================
-      # BUILD WINE IDL TOOLING + GENERATE dwrite.h
+      # BUILD WINE IDL TOOLING + GENERATE REQUIRED HEADERS
       # ============================================================
       - name: Build Wine IDL tooling and headers
         working-directory: wine/build-arm64ec
@@ -196,12 +196,43 @@ jobs:
 
           chmod +x "$WIDL"
 
+          mkdir -p ../include/wine/windows
+
+          echo ""
+          echo "========================================"
+          echo "Checking required IDL sources"
+          echo "========================================"
+
+          test -f ../include/dwrite.idl
+          test -f ../include/objidlbase.idl
+
+          ls -lh \
+            ../include/dwrite.idl \
+            ../include/objidlbase.idl
+
+          echo ""
+          echo "========================================"
+          echo "Generating objidlbase.h"
+          echo "========================================"
+
+          "$WIDL" \
+            -I../include \
+            -I../include/wine/windows \
+            -h \
+            -o ../include/wine/windows/objidlbase.h \
+            ../include/objidlbase.idl
+
+          echo ""
+          echo "Checking generated objidlbase.h:"
+
+          test -f ../include/wine/windows/objidlbase.h
+
+          ls -lh ../include/wine/windows/objidlbase.h
+
           echo ""
           echo "========================================"
           echo "Generating dwrite.h"
           echo "========================================"
-
-          mkdir -p ../include/wine/windows
 
           "$WIDL" \
             -I../include \
@@ -211,14 +242,17 @@ jobs:
             ../include/dwrite.idl
 
           echo ""
-          echo "Checking generated header:"
+          echo "Checking generated headers:"
 
           test -f ../include/wine/windows/dwrite.h
+          test -f ../include/wine/windows/objidlbase.h
 
-          ls -lh ../include/wine/windows/dwrite.h
+          ls -lh \
+            ../include/wine/windows/dwrite.h \
+            ../include/wine/windows/objidlbase.h
 
           echo ""
-          echo "dwrite.h generated successfully."
+          echo "Wine IDL headers generated successfully."
 
       # ============================================================
       # BUILD WINE NTDLL
