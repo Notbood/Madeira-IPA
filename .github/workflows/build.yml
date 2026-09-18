@@ -215,12 +215,6 @@ jobs:
           set -euxo pipefail
           bash build/win32u-unix/build.sh
 
-      - name: Build win32u-unix
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-          bash build/win32u-unix/build.sh
-
       - name: Diagnose Wine wineserver build tree
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
@@ -247,12 +241,6 @@ jobs:
           find wine -path '*/server/*' -type f \
             \( -name '*.o' -o -name '*.a' -o -name 'Makefile' \) \
             -print | sort | head -300
-
-      - name: Build wineserver
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-          bash build/wineserver/build.sh
 
       - name: Build wineserver
         if: steps.native-cache.outputs.cache-hit != 'true'
