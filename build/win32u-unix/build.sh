@@ -6,16 +6,13 @@
 # Phase 3D step 1: just get every file compiling. All SONAME_LIB*
 # deps (freetype, fontconfig, egl, vulkan) forced undefined for now;
 # those code paths fall back to stubs.
+
 set -e
 
 BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$BUILD_DIR/../.." && pwd)"
 WINE_SRC="$REPO_ROOT/wine"
-
-# IMPORTANT:
-# Use the same configured Wine build tree that successfully passed ntdll.
 WINE_BUILD="$WINE_SRC/build-arm64ec"
-
 NTDLL_SHIMS="$REPO_ROOT/build/ntdll-unix/shims"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 OBJ_DIR="$BUILD_DIR/obj"
@@ -29,19 +26,39 @@ FAILED_FILES=""
 
 FREETYPE_DIR="$REPO_ROOT/build/freetype-ios"
 
+# Verify the expected Wine build tree exists.
+if [ ! -d "$WINE_BUILD" ]; then
+    echo "ERROR: Wine build directory not found:"
+    echo "  $WINE_BUILD"
+    exit 1
+fi
+
+if [ ! -f "$WINE_BUILD/include/config.h" ]; then
+    echo "ERROR: Wine generated config.h not found:"
+    echo "  $WINE_BUILD/include/config.h"
+    exit 1
+fi
+
 compile_one() {
     local src=$1
     local name=$2
     shift 2
 
+    local ERR_FILE="$OBJ_DIR/$name.err"
+
     echo -n "  $name... "
 
-    ERR_FILE="$OBJ_DIR/$name.err"
-
     if xcrun -sdk iphoneos clang \
-        -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
-        -O2 -fPIC -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
-        -Wno-implicit-function-declaration -Wno-int-conversion \
+        -arch arm64 \
+        -isysroot "$SDK" \
+        -miphoneos-version-min=17.0 \
+        -O2 \
+        -fPIC \
+        -fvisibility=hidden \
+        -fno-stack-protector \
+        -fno-strict-aliasing \
+        -Wno-implicit-function-declaration \
+        -Wno-int-conversion \
         -include "$BUILD_DIR/config_ios.h" \
         -include "$REPO_ROOT/build/ntdll-unix/shims/wine_ios_exit.h" \
         -I"$BUILD_DIR" \
@@ -50,10 +67,13 @@ compile_one() {
         -I"$WINE_BUILD/dlls/win32u" \
         -I"$WINE_SRC/dlls/win32u" \
         -I"$WINE_SRC/include" \
-        -D__WINESRC__ -D_WIN32U_ \
-        -D_ACRTIMP= -DWINBASEAPI= \
+        -D__WINESRC__ \
+        -D_WIN32U_ \
+        -D_ACRTIMP= \
+        -DWINBASEAPI= \
         -DSYSTEMDLLPATH=\"\" \
-        -DWINE_UNIX_LIB -DWINE_IOS=1 \
+        -DWINE_UNIX_LIB \
+        -DWINE_IOS=1 \
         -D__wine_unix_lib_init=win32u_unix_lib_init \
         -USONAME_LIBFREETYPE \
         -USONAME_LIBFONTCONFIG \
@@ -70,98 +90,85 @@ compile_one() {
         SUCCEEDED=$((SUCCEEDED + 1))
 
     else
+
         echo "FAILED"
+        FAILED=$((FAILED + 1))
+        FAILED_FILES="$FAILED_FILES $name"
 
-        echo ""
         echo "----- $name compiler error -----"
-
         if [ -f "$ERR_FILE" ]; then
             cat "$ERR_FILE"
         else
-            echo "ERROR: compiler error file was not created:"
-            echo "$ERR_FILE"
+            echo "(no error file found)"
         fi
-
         echo "--------------------------------"
 
-        FAILED=$((FAILED + 1))
-        FAILED_FILES="$FAILED_FILES $name"
     fi
 }
 
 echo "=== Building win32u unix (iOS) ==="
 
-echo "Wine source:"
-echo "$WINE_SRC"
-
-echo "Wine build:"
-echo "$WINE_BUILD"
-
-if [ ! -d "$WINE_BUILD" ]; then
-    echo "ERROR: Wine build directory does not exist:"
-    echo "$WINE_BUILD"
-    exit 1
-fi
-
-if [ ! -f "$WINE_BUILD/include/config.h" ]; then
-    echo "ERROR: Wine config.h does not exist:"
-    echo "$WINE_BUILD/include/config.h"
-    exit 1
-fi
-
-echo "Wine build tree verified."
-
 # All *.c files except main.c (main.c is the PE side entry — lives in win32u.dll).
 # dibdrv/*.c compile as their own translation units.
 for src in $WINE_SRC/dlls/win32u/*.c $WINE_SRC/dlls/win32u/dibdrv/*.c; do
+
     name=$(basename "$src" .c)
 
     # main.c is PE-side (DllMain, syscall PE wrappers) — skip.
     [ "$name" = "main" ] && continue
 
-    # dibdrv file collisions: prefix them so we don't overwrite dc.o/bitblt.o/objects.o
+    # dibdrv file collisions: prefix them so we don't overwrite
+    # dc.o / bitblt.o / objects.o.
     if [[ "$src" == *"/dibdrv/"* ]]; then
         name="dibdrv_$name"
     fi
 
-    # Per-file iOS overrides (analogous to ntdll-unix's pattern).
+    # Per-file iOS overrides.
     case "$name" in
+
         class)
             compile_one "$BUILD_DIR/class_ios.c" "class"
             continue
             ;;
+
         winstation)
             compile_one "$BUILD_DIR/winstation_ios.c" "winstation"
             continue
             ;;
+
         sysparams)
             compile_one "$BUILD_DIR/sysparams_ios.c" "sysparams"
             continue
             ;;
+
         defwnd)
             compile_one "$BUILD_DIR/defwnd_ios.c" "defwnd"
             continue
             ;;
+
         driver)
             compile_one "$BUILD_DIR/driver_ios.c" "driver"
             continue
             ;;
+
         message)
             compile_one "$BUILD_DIR/message_ios.c" "message"
             continue
             ;;
+
         freetype)
-            # Statically-linked freetype (build/freetype-ios). The wrapper
-            # re-defines HAVE_FT2BUILD_H itself; config_ios.h's #undefs win
-            # for every other TU.
+            # Statically-linked freetype.
+            # The wrapper re-defines HAVE_FT2BUILD_H itself.
             compile_one "$BUILD_DIR/freetype_ios.c" "freetype" \
                 -I"$FREETYPE_DIR/build/include" \
                 -I"$REPO_ROOT/research/freetype/include"
             continue
             ;;
+
     esac
 
     compile_one "$src" "$name"
+
 done
 
 echo ""
@@ -171,9 +178,10 @@ if [ -n "$FAILED_FILES" ]; then
     echo "Failed:$FAILED_FILES"
 fi
 
-if [ "$FAILED" -gt 0 ]; then
+if [ $FAILED -gt 0 ]; then
     echo ""
     echo "win32u-unix compilation failed."
+    echo "Compiler errors were printed above."
     exit 1
 fi
 
@@ -184,12 +192,15 @@ ar rcs "$OBJ_DIR/libwin32u_unix.a" "$OBJ_DIR"/*.o
 
 # Merge the static freetype so the app link needs no project changes.
 if [ -f "$FREETYPE_DIR/build/libfreetype.a" ]; then
-    libtool -static -o "$OBJ_DIR/libwin32u_unix.a" \
+
+    libtool -static \
+        -o "$OBJ_DIR/libwin32u_unix.a" \
         "$OBJ_DIR/libwin32u_unix.a" \
         "$FREETYPE_DIR/build/libfreetype.a" \
         2>/dev/null
 
     echo "merged libfreetype.a"
+
 else
     echo "WARNING: no libfreetype.a — fonts will be disabled"
 fi
@@ -199,5 +210,4 @@ echo "Copying to app..."
 cp "$OBJ_DIR/libwin32u_unix.a" "$APP_LIB"
 
 echo "libwin32u_unix.a: $(wc -c < "$APP_LIB" | tr -d ' ') bytes"
-
 echo "Done!"
