@@ -78,6 +78,7 @@ jobs:
       - name: Add toolchains to PATH
         run: |
           set -euxo pipefail
+
           # Homebrew's bison is keg-only on macOS because Apple ships an
           # older /usr/bin/bison. Wine requires bison >= 3.0, so put the
           # Homebrew version first on PATH for configure/build steps.
@@ -139,6 +140,7 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+
           if [ ! -f wine/build-arm64ec/Makefile ]; then
             rm -rf wine/build-arm64ec
             mkdir -p wine/build-arm64ec
@@ -154,19 +156,66 @@ jobs:
           # configure above leaves this shell inside wine/build-arm64ec.
           make -j"$(sysctl -n hw.ncpu)" dlls/ntdll
 
-      # Freetype's build script expects a shallow clone at research/freetype.
-      # This is required on a cold runner because that source tree is not
-      # provided by the Madeira checkout itself.
-      - name: Clone Freetype source
+      # Wine's generated Windows headers are required by the Madeira
+      # unix-side libraries. In particular, dwrite_unixlib includes
+      # dwrite.h through wine/dlls/dwrite/unixlib.h.
+      #
+      # These headers are generated from Wine IDL files with widl. This
+      # step is intentionally separate from ntdll-unix so a cold runner
+      # receives the same generated-header environment as the working build.
+      - name: Generate required Wine headers
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-          if [ ! -d research/freetype ]; then
-            mkdir -p research
-            git clone --depth 1 --branch VER-2-13-3 \
-              https://github.com/freetype/freetype.git \
-              research/freetype
-          fi
+
+          WINE_SRC="$GITHUB_WORKSPACE/wine"
+          WINE_WINDOWS="$WINE_SRC/include/wine/windows"
+          WIDL="$(command -v arm64ec-w64-mingw32-widl)"
+
+          test -x "$WIDL"
+          mkdir -p "$WINE_WINDOWS"
+
+          echo "Using widl: $WIDL"
+          echo "Wine source: $WINE_SRC"
+          echo "Wine Windows headers: $WINE_WINDOWS"
+
+          generated=0
+
+          for idl in "$WINE_SRC"/include/*.idl; do
+            [ -f "$idl" ] || continue
+
+            name="$(basename "$idl" .idl)"
+            output="$WINE_WINDOWS/${name}.h"
+
+            echo "Generating $output from $idl"
+
+            if "$WIDL" \
+              -I"$WINE_SRC/include" \
+              -I"$WINE_WINDOWS" \
+              -h \
+              -o "$output" \
+              "$idl"; then
+              generated=$((generated + 1))
+            else
+              echo "WARNING: widl failed for $idl"
+              rm -f "$output"
+            fi
+          done
+
+          echo "Generated $generated Wine headers."
+
+          echo "=== Required Wine headers ==="
+          find "$WINE_WINDOWS" \
+            \( -name 'dwrite.h' \
+            -o -name 'objidlbase.h' \
+            -o -name 'unknwn.h' \) \
+            -print
+
+          test -s "$WINE_WINDOWS/dwrite.h"
+          test -s "$WINE_WINDOWS/objidlbase.h"
+          test -s "$WINE_WINDOWS/unknwn.h"
+
+          echo "Required Wine headers are present."
 
       - name: Build GnuTLS, Freetype and Unix Wine libraries
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -176,34 +225,7 @@ jobs:
           bash build/freetype-ios/build.sh
           bash build/ntdll-unix/build.sh
           bash build/win32u-unix/build.sh
-
-      # ============================================================
-      # FIND BASE WINESERVER LIBRARY
-      # ============================================================
-      - name: Find base wineserver library
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-
-          echo "=== Existing libwineserver.a ==="
-          find . -type f -name 'libwineserver.a' -print
-
-          echo "=== Wineserver build references ==="
-          grep -R "libwineserver.a" build .github --exclude-dir=.git || true
-
-          echo "=== Wine server Makefile targets ==="
-          grep -R "libwineserver" wine/server wine/Makefile wine/build-arm64ec 2>/dev/null || true
-
-      # ============================================================
-      # WINESERVER
-      # ============================================================
-      - name: Build wineserver
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-
-          chmod +x build/wineserver/build.sh
-          build/wineserver/build.sh
+          bash build/wineserver/build.sh
 
       - name: Build FEX for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -260,25 +282,32 @@ jobs:
           # directory, because that IPA would not be a meaningful build.
           shopt -s nullglob
           dlls=(app/Madeira/x86_64-vcruntime/*.dll)
+
           if [ "${#dlls[@]}" -eq 0 ]; then
             echo "No VC++ runtime DLLs found."
             echo "See tools/fetch-vcruntime.md in the Madeira source tree."
             echo "Supply the required unmodified Microsoft redistributables and rerun."
             exit 1
           fi
+
           printf '%s\n' "${dlls[@]}"
 
       - name: Verify required native libraries
         run: |
           set -euxo pipefail
+
           required=(
             app/Madeira/libntdll_unix.a
             app/Madeira/libwin32u_unix.a
             app/Madeira/libwineserver.a
             app/Madeira/libdxmt_combined.a
           )
+
           for f in "${required[@]}"; do
-            test -s "$f" || { echo "Missing/empty: $f"; exit 1; }
+            test -s "$f" || {
+              echo "Missing/empty: $f"
+              exit 1
+            }
             file "$f"
           done
 
@@ -310,25 +339,33 @@ jobs:
       - name: Locate and validate Madeira.app
         run: |
           set -euxo pipefail
+
           APP_PATH="$(find derived/Build/Products -maxdepth 3 -type d -name Madeira.app -print -quit)"
+
           test -n "$APP_PATH"
           test -f "$APP_PATH/Info.plist"
           test -f "$APP_PATH/Madeira"
+
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
           echo "Built app: $APP_PATH"
+
           file "$APP_PATH/Madeira"
 
       - name: Package unsigned IPA
         run: |
           set -euxo pipefail
+
           rm -rf Payload Madeira.ipa
           mkdir -p Payload
+
           cp -R "$APP_PATH" Payload/Madeira.app
+
           /usr/bin/zip -qry Madeira.ipa Payload
           rm -rf Payload
 
           test -s Madeira.ipa
           ls -lh Madeira.ipa
+
           shasum -a 256 Madeira.ipa | tee Madeira.ipa.sha256
 
       - name: Upload unsigned IPA
@@ -350,6 +387,7 @@ jobs:
             echo "**Xcode:**"
             xcodebuild -version | head -2
             echo
+
             if [ -f Madeira.ipa ]; then
               echo "**IPA:** generated"
               echo "**SHA-256:** \`$(shasum -a 256 Madeira.ipa | awk '{print $1}')\`"
