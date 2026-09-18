@@ -154,6 +154,20 @@ jobs:
           # configure above leaves this shell inside wine/build-arm64ec.
           make -j"$(sysctl -n hw.ncpu)" dlls/ntdll
 
+      # Freetype's build script expects a shallow clone at research/freetype.
+      # This is required on a cold runner because that source tree is not
+      # provided by the Madeira checkout itself.
+      - name: Clone Freetype source
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          if [ ! -d research/freetype ]; then
+            mkdir -p research
+            git clone --depth 1 --branch VER-2-13-3 \
+              https://github.com/freetype/freetype.git \
+              research/freetype
+          fi
+
       - name: Build GnuTLS, Freetype and Unix Wine libraries
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
