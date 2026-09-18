@@ -78,7 +78,6 @@ jobs:
       - name: Add toolchains to PATH
         run: |
           set -euxo pipefail
-
           # Homebrew's bison is keg-only on macOS because Apple ships an
           # older /usr/bin/bison. Wine requires bison >= 3.0, so put the
           # Homebrew version first on PATH for configure/build steps.
@@ -140,7 +139,6 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-
           if [ ! -f wine/build-arm64ec/Makefile ]; then
             rm -rf wine/build-arm64ec
             mkdir -p wine/build-arm64ec
@@ -156,13 +154,8 @@ jobs:
           # configure above leaves this shell inside wine/build-arm64ec.
           make -j"$(sysctl -n hw.ncpu)" dlls/ntdll
 
-      # Wine's generated Windows headers are required by the Madeira
-      # unix-side libraries. In particular, dwrite_unixlib includes
-      # dwrite.h through wine/dlls/dwrite/unixlib.h.
-      #
-      # These headers are generated from Wine IDL files with widl. This
-      # step is intentionally separate from ntdll-unix so a cold runner
-      # receives the same generated-header environment as the working build.
+      # Wine's generated Windows headers are required by the unix-side
+      # dwrite build. Generate them from the Wine IDL files before ntdll-unix.
       - name: Generate required Wine headers
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
@@ -216,6 +209,23 @@ jobs:
           test -s "$WINE_WINDOWS/unknwn.h"
 
           echo "Required Wine headers are present."
+
+      # Freetype source is not part of the repository checkout. The
+      # freetype-ios build script expects research/freetype to exist.
+      - name: Clone Freetype source
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+
+          if [ ! -d research/freetype ]; then
+            mkdir -p research
+            git clone --depth 1 --branch VER-2-13-3 \
+              https://github.com/freetype/freetype.git \
+              research/freetype
+          fi
+
+          test -f research/freetype/include/ft2build.h
+          echo "Freetype source is ready."
 
       - name: Build GnuTLS, Freetype and Unix Wine libraries
         if: steps.native-cache.outputs.cache-hit != 'true'
@@ -282,32 +292,25 @@ jobs:
           # directory, because that IPA would not be a meaningful build.
           shopt -s nullglob
           dlls=(app/Madeira/x86_64-vcruntime/*.dll)
-
           if [ "${#dlls[@]}" -eq 0 ]; then
             echo "No VC++ runtime DLLs found."
             echo "See tools/fetch-vcruntime.md in the Madeira source tree."
             echo "Supply the required unmodified Microsoft redistributables and rerun."
             exit 1
           fi
-
           printf '%s\n' "${dlls[@]}"
 
       - name: Verify required native libraries
         run: |
           set -euxo pipefail
-
           required=(
             app/Madeira/libntdll_unix.a
             app/Madeira/libwin32u_unix.a
             app/Madeira/libwineserver.a
             app/Madeira/libdxmt_combined.a
           )
-
           for f in "${required[@]}"; do
-            test -s "$f" || {
-              echo "Missing/empty: $f"
-              exit 1
-            }
+            test -s "$f" || { echo "Missing/empty: $f"; exit 1; }
             file "$f"
           done
 
@@ -339,33 +342,25 @@ jobs:
       - name: Locate and validate Madeira.app
         run: |
           set -euxo pipefail
-
           APP_PATH="$(find derived/Build/Products -maxdepth 3 -type d -name Madeira.app -print -quit)"
-
           test -n "$APP_PATH"
           test -f "$APP_PATH/Info.plist"
           test -f "$APP_PATH/Madeira"
-
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
           echo "Built app: $APP_PATH"
-
           file "$APP_PATH/Madeira"
 
       - name: Package unsigned IPA
         run: |
           set -euxo pipefail
-
           rm -rf Payload Madeira.ipa
           mkdir -p Payload
-
           cp -R "$APP_PATH" Payload/Madeira.app
-
           /usr/bin/zip -qry Madeira.ipa Payload
           rm -rf Payload
 
           test -s Madeira.ipa
           ls -lh Madeira.ipa
-
           shasum -a 256 Madeira.ipa | tee Madeira.ipa.sha256
 
       - name: Upload unsigned IPA
@@ -387,7 +382,6 @@ jobs:
             echo "**Xcode:**"
             xcodebuild -version | head -2
             echo
-
             if [ -f Madeira.ipa ]; then
               echo "**IPA:** generated"
               echo "**SHA-256:** \`$(shasum -a 256 Madeira.ipa | awk '{print $1}')\`"
