@@ -12,27 +12,6 @@ SHIMS_DIR="$REPO_ROOT/build/ntdll-unix/shims"
 OBJ_DIR="$BUILD_DIR/obj"
 mkdir -p "$OBJ_DIR"
 
-echo "=== Wine server diagnostic ==="
-
-echo "=== Server Makefile ==="
-if [ -f "$WINE_SRC/build-arm64ec/server/Makefile" ]; then
-    sed -n '1,240p' "$WINE_SRC/build-arm64ec/server/Makefile"
-else
-    echo "NO SERVER MAKEFILE"
-fi
-
-echo "=== Wine server objects ==="
-find "$WINE_SRC/build-arm64ec/server" -type f \
-    \( -name '*.o' -o -name '*.a' \) \
-    -print | sort
-
-echo "=== Existing base archive ==="
-if [ -f "$APP_LIB" ]; then
-    echo "$APP_LIB"
-else
-    echo "NO BASE LIBWINESERVER.A"
-fi
-
 # Copy the base library if we don't have one yet
 if [ ! -f "$OBJ_DIR/libwineserver.a" ]; then
     if [ -f "$APP_LIB" ]; then
@@ -156,6 +135,10 @@ esac
 echo ""
 echo "=== Updating libwineserver.a ==="
 
+# Map of patched .o files to the original .o names they replace
+# Pairs of "new_obj_filename:old_obj_filename_in_archive". Plain array
+# iteration to avoid bash assoc-array word-splitting issues seen in zsh-launched
+# build environments.
 REPLACEMENTS=(
     "wine_log_ios.o:wine_log_ios.o"
     "request_ios.o:request.o"
@@ -190,39 +173,53 @@ done
 
 echo ""
 echo "=== Renaming colliding symbols in every .o (objcopy sweep) ==="
-
+# Renames internal-to-archive: extract every .o, rename the 10 symbols
+# we know collide with win32u-unix, repackage. Affects definitions AND
+# references uniformly, so cross-file calls inside wineserver still
+# resolve. Externals (win32u, etc.) only see the ws_-prefixed names.
 OBJCOPY=$(command -v llvm-objcopy || echo /opt/homebrew/opt/llvm/bin/llvm-objcopy)
 [ -x "$OBJCOPY" ] || OBJCOPY=/opt/homebrew/Cellar/llvm/22.1.0/bin/llvm-objcopy
-
 COLLISIONS=(
     alloc_user_handle free_user_handle get_virtual_screen_rect
     destroy_thread_windows get_window_thread is_desktop_class
     is_message_class is_window_visible mirror_region send_notify_message
+    # shared_session: BOTH wineserver and win32u-unix declare it as a
+    # common global. Single-process iOS link merges them — last writer
+    # wins. win32u's shared_session_init() overwrites with the client-side
+    # NtMapViewOfSection result (read-only), making wineserver's writes
+    # silently fail since they're going through the client's RO view.
+    # Rename wineserver-side to ws_shared_session so each side has its
+    # own pointer to its own mapping of the same backing file.
     shared_session
+    # user_shared_data: the same defect as shared_session, one layer over.
+    # wineserver defines it as a common global and ntdll-unix defines it as
+    # initialized data; the single-process link merges them. wineserver's
+    # create_user_data_mapping() sets it to a writable alias, then the guest's
+    # ntdll init runs virtual_ios.c's `user_shared_data = NULL;
+    # NtAllocateVirtualMemory(..., PAGE_READONLY)` over the SAME variable, so
+    # the server's pointer starts aiming at the guest's read-only page in the
+    # FEX guest band. Unlike shared_session this does not fail silently: the
+    # server's next store faults on a PROT_READ page and the main loop wedges
+    # forever, which is why the shared clock could never be published and why
+    # every process hung in server_init_process() the moment a client
+    # connected -- guest ntdll init is exactly when the pointer was stolen.
     user_shared_data
 )
-
 RENAME_ARGS=()
 for s in "${COLLISIONS[@]}"; do
     RENAME_ARGS+=(--redefine-sym "_${s}=_ws_${s}")
 done
-
 TMP_RENAME_DIR="$OBJ_DIR/rename"
 rm -rf "$TMP_RENAME_DIR" && mkdir -p "$TMP_RENAME_DIR"
-
 (cd "$TMP_RENAME_DIR" && ar x "$OBJ_DIR/libwineserver.a")
-
 for f in "$TMP_RENAME_DIR"/*.o; do
     "$OBJCOPY" "${RENAME_ARGS[@]}" "$f"
 done
-
 rm "$OBJ_DIR/libwineserver.a"
 ar rcs "$OBJ_DIR/libwineserver.a" "$TMP_RENAME_DIR"/*.o
 rm -rf "$TMP_RENAME_DIR"
-
 echo "  symbol rename + repack OK"
 
 echo "Copying to app..."
 cp "$OBJ_DIR/libwineserver.a" "$APP_LIB"
-
 echo "Done! libwineserver.a: $(wc -c < "$APP_LIB" | tr -d ' ') bytes"
