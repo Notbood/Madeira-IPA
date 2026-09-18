@@ -216,7 +216,7 @@ jobs:
           bash build/win32u-unix/build.sh
 
       - name: Diagnose Wine wineserver build tree
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: always()
         run: |
           set -euxo pipefail
 
