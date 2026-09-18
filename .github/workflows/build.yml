@@ -215,37 +215,32 @@ jobs:
           set -euxo pipefail
           bash build/win32u-unix/build.sh
 
-      - name: Diagnose Wine wineserver build tree
-        if: always()
+      - name: Build wineserver
+        if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-
-          echo "=== Wine build directories ==="
+      
+          echo "=== WINESERVER DIAGNOSTIC ==="
+          pwd
+          git rev-parse HEAD
+      
           find wine -maxdepth 2 -type d \
             \( -name 'build-*' -o -name 'server' \) \
             -print | sort
-
+      
           echo "=== Existing wineserver archives ==="
           find . -type f \
             \( -name 'libwineserver.a' -o -name 'wineserver' \) \
             -print | sort
-
-          echo "=== build-macos contents ==="
+      
+          echo "=== build-macos ==="
           if [ -d wine/build-macos ]; then
             find wine/build-macos -maxdepth 3 -type f | sort | head -200
           else
             echo "wine/build-macos DOES NOT EXIST"
           fi
-
-          echo "=== server build outputs ==="
-          find wine -path '*/server/*' -type f \
-            \( -name '*.o' -o -name '*.a' -o -name 'Makefile' \) \
-            -print | sort | head -300
-
-      - name: Build wineserver
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
+      
+          echo "=== Starting wineserver build ==="
           bash build/wineserver/build.sh
 
       - name: Build FEX for iOS
