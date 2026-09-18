@@ -412,8 +412,8 @@ jobs:
         run: |
           set -euxo pipefail
 
-          chmod +x build/wineserver-ios/build.sh
-          build/wineserver-ios/build.sh
+          chmod +x build/wineserver/build.sh
+          build/wineserver/build.sh
 
       # ============================================================
       # FEX
