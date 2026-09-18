@@ -162,7 +162,7 @@ jobs:
             --without-freetype
 
       # ============================================================
-      # BUILD WINE IDL TOOLING + GENERATE REQUIRED HEADERS
+      # BUILD WINE IDL TOOLING + GENERATE ALL WINDOWS HEADERS
       # ============================================================
       - name: Build Wine IDL tooling and headers
         working-directory: wine/build-arm64ec
@@ -200,59 +200,95 @@ jobs:
 
           echo ""
           echo "========================================"
-          echo "Checking required IDL sources"
+          echo "Discovering Wine IDL files"
           echo "========================================"
 
-          test -f ../include/dwrite.idl
-          test -f ../include/objidlbase.idl
+          mapfile -t IDL_FILES < <(
+            find ../include \
+              -maxdepth 1 \
+              -type f \
+              -name '*.idl' \
+              -print \
+              | sort
+          )
 
-          ls -lh \
-            ../include/dwrite.idl \
-            ../include/objidlbase.idl
+          if [ "${#IDL_FILES[@]}" -eq 0 ]; then
+            echo "ERROR: No Wine IDL files were found."
+            exit 1
+          fi
+
+          echo "Found ${#IDL_FILES[@]} IDL files:"
+          printf '  %s\n' "${IDL_FILES[@]}"
 
           echo ""
           echo "========================================"
-          echo "Generating objidlbase.h"
+          echo "Generating Wine Windows headers"
           echo "========================================"
 
-          "$WIDL" \
-            -I../include \
-            -I../include/wine/windows \
-            -h \
-            -o ../include/wine/windows/objidlbase.h \
-            ../include/objidlbase.idl
+          GENERATED=0
+          FAILED=0
 
-          echo ""
-          echo "Checking generated objidlbase.h:"
+          for IDL in "${IDL_FILES[@]}"; do
+            NAME="$(basename "$IDL" .idl)"
+            OUT="../include/wine/windows/${NAME}.h"
 
-          test -f ../include/wine/windows/objidlbase.h
+            echo ""
+            echo "Generating:"
+            echo "  IDL:    $IDL"
+            echo "  Header: $OUT"
 
-          ls -lh ../include/wine/windows/objidlbase.h
+            if "$WIDL" \
+              -I../include \
+              -I../include/wine/windows \
+              -h \
+              -o "$OUT" \
+              "$IDL"; then
+              GENERATED=$((GENERATED + 1))
+            else
+              echo "ERROR: widl failed for $IDL"
+              FAILED=$((FAILED + 1))
+            fi
+          done
 
           echo ""
           echo "========================================"
-          echo "Generating dwrite.h"
+          echo "IDL generation results"
           echo "========================================"
+          echo "Generated: $GENERATED"
+          echo "Failed:    $FAILED"
 
-          "$WIDL" \
-            -I../include \
-            -I../include/wine/windows \
-            -h \
-            -o ../include/wine/windows/dwrite.h \
-            ../include/dwrite.idl
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "ERROR: One or more Wine IDL files failed."
+            exit 1
+          fi
 
           echo ""
-          echo "Checking generated headers:"
+          echo "========================================"
+          echo "Verifying generated Windows headers"
+          echo "========================================"
 
           test -f ../include/wine/windows/dwrite.h
           test -f ../include/wine/windows/objidlbase.h
-
-          ls -lh \
-            ../include/wine/windows/dwrite.h \
-            ../include/wine/windows/objidlbase.h
+          test -f ../include/wine/windows/unknwn.h
 
           echo ""
-          echo "Wine IDL headers generated successfully."
+          echo "Required headers:"
+          ls -lh \
+            ../include/wine/windows/dwrite.h \
+            ../include/wine/windows/objidlbase.h \
+            ../include/wine/windows/unknwn.h
+
+          echo ""
+          echo "Total generated Windows headers:"
+          find ../include/wine/windows \
+            -maxdepth 1 \
+            -type f \
+            -name '*.h' \
+            | wc -l
+
+          echo ""
+          echo "Wine IDL header generation completed successfully."
 
       # ============================================================
       # BUILD WINE NTDLL
