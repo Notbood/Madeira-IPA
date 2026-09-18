@@ -131,6 +131,10 @@ echo "=== Searching for dwrite.h ==="
 find "$WINE_SRC" "$WINE_BUILD" -name dwrite.h -print
 echo "=== End dwrite.h search ==="
 
+echo "=== Searching for objidlbase.h ==="
+find "$WINE_SRC" "$WINE_BUILD" -name objidlbase.h -print
+echo "=== End objidlbase.h search ==="
+
 compile_unixlib "$BUILD_DIR/dwrite_freetype_ios.c" "dwrite_unixlib" "dwrite" \
     -I"$WINE_SRC/dlls/dwrite" \
     -I"$REPO_ROOT/research/freetype/include" \
