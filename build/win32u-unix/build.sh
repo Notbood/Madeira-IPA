@@ -20,13 +20,16 @@ APP_LIB="$REPO_ROOT/app/Madeira/libwin32u_unix.a"
 
 mkdir -p "$OBJ_DIR"
 
+echo "=== Searching for generated objidlbase.h ==="
+find "$WINE_SRC" "$REPO_ROOT/build" -name objidlbase.h -print
+echo "============================================"
+
 SUCCEEDED=0
 FAILED=0
 FAILED_FILES=""
 
 FREETYPE_DIR="$REPO_ROOT/build/freetype-ios"
 
-# Verify the expected Wine build tree exists.
 if [ ! -d "$WINE_BUILD" ]; then
     echo "ERROR: Wine build directory not found:"
     echo "  $WINE_BUILD"
@@ -108,22 +111,16 @@ compile_one() {
 
 echo "=== Building win32u unix (iOS) ==="
 
-# All *.c files except main.c (main.c is the PE side entry — lives in win32u.dll).
-# dibdrv/*.c compile as their own translation units.
 for src in $WINE_SRC/dlls/win32u/*.c $WINE_SRC/dlls/win32u/dibdrv/*.c; do
 
     name=$(basename "$src" .c)
 
-    # main.c is PE-side (DllMain, syscall PE wrappers) — skip.
     [ "$name" = "main" ] && continue
 
-    # dibdrv file collisions: prefix them so we don't overwrite
-    # dc.o / bitblt.o / objects.o.
     if [[ "$src" == *"/dibdrv/"* ]]; then
         name="dibdrv_$name"
     fi
 
-    # Per-file iOS overrides.
     case "$name" in
 
         class)
@@ -157,8 +154,6 @@ for src in $WINE_SRC/dlls/win32u/*.c $WINE_SRC/dlls/win32u/dibdrv/*.c; do
             ;;
 
         freetype)
-            # Statically-linked freetype.
-            # The wrapper re-defines HAVE_FT2BUILD_H itself.
             compile_one "$BUILD_DIR/freetype_ios.c" "freetype" \
                 -I"$FREETYPE_DIR/build/include" \
                 -I"$REPO_ROOT/research/freetype/include"
@@ -190,7 +185,6 @@ echo "=== Building libwin32u_unix.a ==="
 
 ar rcs "$OBJ_DIR/libwin32u_unix.a" "$OBJ_DIR"/*.o
 
-# Merge the static freetype so the app link needs no project changes.
 if [ -f "$FREETYPE_DIR/build/libfreetype.a" ]; then
 
     libtool -static \
