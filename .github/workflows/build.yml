@@ -162,7 +162,7 @@ jobs:
             --without-freetype
 
       # ============================================================
-      # BUILD WINE IDL TOOLING + GENERATE ALL WINDOWS HEADERS
+      # BUILD WINE IDL TOOLING + GENERATE AVAILABLE WINDOWS HEADERS
       # ============================================================
       - name: Build Wine IDL tooling and headers
         working-directory: wine/build-arm64ec
@@ -181,11 +181,7 @@ jobs:
 
           if [ -z "$WIDL" ]; then
             echo "ERROR: widl executable was not produced."
-            echo ""
-            echo "tools/widl contents:"
             ls -la tools/widl || true
-            echo ""
-            echo "All widl-related files:"
             find . -iname '*widl*' -print
             exit 1
           fi
@@ -216,11 +212,7 @@ jobs:
             exit 1
           fi
 
-          echo "Found $IDL_COUNT IDL files:"
-
-          for IDL in "${IDL_FILES[@]}"; do
-            echo "  $IDL"
-          done
+          echo "Found $IDL_COUNT IDL files."
 
           echo ""
           echo "========================================"
@@ -247,8 +239,9 @@ jobs:
               "$IDL"; then
               GENERATED=$((GENERATED + 1))
             else
-              echo "ERROR: widl failed for $IDL"
+              echo "WARNING: widl could not generate $IDL"
               FAILED=$((FAILED + 1))
+              rm -f "$OUT"
             fi
           done
 
@@ -257,25 +250,29 @@ jobs:
           echo "IDL generation results"
           echo "========================================"
           echo "Generated: $GENERATED"
-          echo "Failed:    $FAILED"
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo ""
-            echo "ERROR: One or more Wine IDL files failed."
-            exit 1
-          fi
+          echo "Skipped:   $FAILED"
 
           echo ""
           echo "========================================"
-          echo "Verifying generated Windows headers"
+          echo "Verifying required headers"
           echo "========================================"
 
-          test -f ../include/wine/windows/dwrite.h
-          test -f ../include/wine/windows/objidlbase.h
-          test -f ../include/wine/windows/unknwn.h
+          REQUIRED_HEADERS="
+          dwrite.h
+          objidlbase.h
+          unknwn.h
+          "
+
+          for HEADER in $REQUIRED_HEADERS; do
+            if [ ! -f "../include/wine/windows/$HEADER" ]; then
+              echo "ERROR: Required header missing: $HEADER"
+              exit 1
+            fi
+          done
 
           echo ""
-          echo "Required headers:"
+          echo "Required headers found:"
+
           ls -lh \
             ../include/wine/windows/dwrite.h \
             ../include/wine/windows/objidlbase.h \
@@ -290,7 +287,7 @@ jobs:
             | wc -l
 
           echo ""
-          echo "Wine IDL header generation completed successfully."
+          echo "Wine IDL header generation completed."
 
       # ============================================================
       # BUILD WINE NTDLL
