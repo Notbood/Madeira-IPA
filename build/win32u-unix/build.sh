@@ -184,15 +184,14 @@ fi
 echo ""
 echo "=== Building libwin32u_unix.a ==="
 
-ar rcs "$OBJ_DIR/libwin32u_unix.a" "$OBJ_DIR"/*.o
+/usr/bin/ar rcs "$OBJ_DIR/libwin32u_unix.a" "$OBJ_DIR"/*.o
 
 if [ -f "$FREETYPE_DIR/build/libfreetype.a" ]; then
 
-    libtool -static \
+    /usr/bin/libtool -static \
         -o "$OBJ_DIR/libwin32u_unix.a" \
         "$OBJ_DIR/libwin32u_unix.a" \
-        "$FREETYPE_DIR/build/libfreetype.a" \
-        2>/dev/null
+        "$FREETYPE_DIR/build/libfreetype.a"
 
     echo "merged libfreetype.a"
 
