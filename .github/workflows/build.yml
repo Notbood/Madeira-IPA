@@ -266,7 +266,7 @@ jobs:
           bash build/wineserver/build.sh
 
       - name: Patch FEX for iOS host compatibility
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: false
         run: |
           set -euxo pipefail
 
@@ -360,7 +360,6 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-
           cmake -S FEX -B FEX/build-ios -G Ninja \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_SYSTEM_PROCESSOR=arm64 \
@@ -368,13 +367,30 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-DFEX_IOS_HOST -Wno-error=cast-qual -Wno-error=ignored-qualifiers -Wno-error=implicit-fallthrough" \
-            -DENABLE_STATIC_LIBS=ON \
+            -DCMAKE_C_FLAGS="-DFEX_IOS_HOST=1" \
+            -DCMAKE_CXX_FLAGS="-DFEX_IOS_HOST=1" \
             -DBUILD_TESTING=OFF \
-            -DTUNE_CPU=none \
-            -DENABLE_LTO=OFF
+            -DBUILD_FEX_LINUX_TESTS=OFF \
+            -DBUILD_THUNKS=OFF \
+            -DBUILD_FEXCONFIG=OFF \
+            -DBUILD_STEAM_SUPPORT=OFF \
+            -DENABLE_LTO=OFF \
+            -DENABLE_CCACHE=OFF \
+            -DTUNE_CPU=generic \
+            -DTUNE_ARCH=generic 2>&1 | tee fex-configure.log
 
-          cmake --build FEX/build-ios -j1 --verbose
+          cmake --build FEX/build-ios --parallel "$(sysctl -n hw.ncpu)" 2>&1 | tee fex-build.log
+          test -f FEX/build-ios/FEXCore/Source/libFEXCore.a
+
+      - name: Upload FEX logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fex-logs
+          path: |
+            fex-configure.log
+            fex-build.log
+          if-no-files-found: ignore
 
       - name: Build DXMT for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
