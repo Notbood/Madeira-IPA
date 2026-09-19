@@ -90,6 +90,7 @@ jobs:
           path: |
             FEX/build-ios
             wine/build-arm64ec
+            wine/build-macos
             build/gnutls-ios/obj
             build/freetype-ios/obj
             build/ntdll-unix/obj
@@ -215,32 +216,53 @@ jobs:
           set -euxo pipefail
           bash build/win32u-unix/build.sh
 
+      - name: Build native Wine server base archive
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+
+          WINE_SRC="$GITHUB_WORKSPACE/wine"
+          BUILD_DIR="$WINE_SRC/build-macos"
+          APP_LIB="$GITHUB_WORKSPACE/app/Madeira/libwineserver.a"
+
+          if [ ! -f "$BUILD_DIR/Makefile" ]; then
+            rm -rf "$BUILD_DIR"
+            mkdir -p "$BUILD_DIR"
+            cd "$BUILD_DIR"
+
+            "$WINE_SRC/configure" \
+              --without-x \
+              --without-freetype \
+              CFLAGS="-arch arm64" \
+              LDFLAGS="-arch arm64"
+          fi
+
+          cd "$BUILD_DIR"
+
+          make -j"$(sysctl -n hw.ncpu)" server/wineserver
+
+          echo "=== Native Wine server objects ==="
+          find server -maxdepth 1 -type f -name '*.o' -print | sort
+
+          test -n "$(find server -maxdepth 1 -type f -name '*.o' -print -quit)"
+
+          mkdir -p "$(dirname "$APP_LIB")"
+
+          rm -f "$APP_LIB"
+
+          /usr/bin/ar rcs "$APP_LIB" server/*.o
+
+          test -s "$APP_LIB"
+
+          echo "=== Base libwineserver.a ==="
+          file "$APP_LIB"
+          ls -lh "$APP_LIB"
+          /usr/bin/ar -t "$APP_LIB" | sort
+
       - name: Build wineserver
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-      
-          echo "=== WINESERVER DIAGNOSTIC ==="
-          pwd
-          git rev-parse HEAD
-      
-          find wine -maxdepth 2 -type d \
-            \( -name 'build-*' -o -name 'server' \) \
-            -print | sort
-      
-          echo "=== Existing wineserver archives ==="
-          find . -type f \
-            \( -name 'libwineserver.a' -o -name 'wineserver' \) \
-            -print | sort
-      
-          echo "=== build-macos ==="
-          if [ -d wine/build-macos ]; then
-            find wine/build-macos -maxdepth 3 -type f | sort | head -200
-          else
-            echo "wine/build-macos DOES NOT EXIST"
-          fi
-      
-          echo "=== Starting wineserver build ==="
           bash build/wineserver/build.sh
 
       - name: Build FEX for iOS
