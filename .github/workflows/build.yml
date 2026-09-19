@@ -272,19 +272,16 @@ jobs:
 
           FEX_FILE="$GITHUB_WORKSPACE/FEX/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp"
           LINKER_GC_FILE="$GITHUB_WORKSPACE/FEX/Data/CMake/LinkerGC.cmake"
-          FEX_CORE_CMAKE="$GITHUB_WORKSPACE/FEX/FEXCore/Source/CMakeLists.txt"
 
           test -f "$FEX_FILE"
           test -f "$LINKER_GC_FILE"
-          test -f "$FEX_CORE_CMAKE"
 
-          python3 - "$FEX_FILE" "$LINKER_GC_FILE" "$FEX_CORE_CMAKE" <<'PY'
+          python3 - "$FEX_FILE" "$LINKER_GC_FILE" <<'PY'
           import sys
           from pathlib import Path
 
           fex_path = Path(sys.argv[1])
           linker_gc_path = Path(sys.argv[2])
-          fex_core_cmake_path = Path(sys.argv[3])
 
           text = fex_path.read_text()
 
@@ -351,27 +348,6 @@ jobs:
 
           linker_gc_path.write_text(linker_text.replace(old_linker, new_linker, 1))
 
-          fex_core_text = fex_core_cmake_path.read_text()
-
-          old_shared = """AddObject(${PROJECT_NAME}_object)
-          AddLibrary(${PROJECT_NAME} STATIC)
-          AddLibrary(${PROJECT_NAME}_shared SHARED)"""
-
-          new_shared = """AddObject(${PROJECT_NAME}_object)
-          AddLibrary(${PROJECT_NAME} STATIC)
-          if (NOT APPLE)
-            AddLibrary(${PROJECT_NAME}_shared SHARED)
-          endif()"""
-
-          if old_shared not in fex_core_text:
-              raise SystemExit(
-                  "ERROR: expected FEXCore shared-library block was not found; refusing to patch."
-              )
-
-          fex_core_cmake_path.write_text(
-              fex_core_text.replace(old_shared, new_shared, 1)
-          )
-
           PY
 
           echo "=== FEX iOS Arm64.cpp patch ==="
@@ -379,9 +355,6 @@ jobs:
 
           echo "=== FEX LinkerGC.cmake patch ==="
           cat "$LINKER_GC_FILE"
-
-          echo "=== FEXCore iOS shared-library patch ==="
-          tail -n 20 "$FEX_CORE_CMAKE"
 
       - name: Build FEX for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
