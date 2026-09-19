@@ -374,7 +374,7 @@ jobs:
             -DTUNE_CPU=none \
             -DENABLE_LTO=OFF
 
-          cmake --build FEX/build-ios -j"$(sysctl -n hw.ncpu)" --verbose
+          cmake --build FEX/build-ios -j1 --verbose
 
       - name: Build DXMT for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
