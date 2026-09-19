@@ -265,6 +265,63 @@ jobs:
           set -euxo pipefail
           bash build/wineserver/build.sh
 
+      - name: Patch FEX for iOS host compatibility
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+
+          FEX_FILE="$GITHUB_WORKSPACE/FEX/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp"
+
+          test -f "$FEX_FILE"
+
+          python3 - "$FEX_FILE" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+
+          old = """  MEMORY_BASIC_INFORMATION mbi {};
+            const char* type = "?";
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(GPRs[AddressReg]), &mbi, sizeof(mbi))) {
+              type = mbi.Type == MEM_IMAGE ? "MEM_IMAGE" : mbi.Type == MEM_MAPPED ? "MEM_MAPPED" : "MEM_PRIVATE";
+            }
+            LogMan::Msg::EFmt("[caspal128] MISALIGNED-UNSUPPORTED Size={} addrReg=x{} addr={:#x} misalign={} "
+                              "crosses16B={} | region base={} size={:#x} prot={:#x} type={} state={:#x}",
+                              Size, AddressReg, GPRs[AddressReg], GPRs[AddressReg] & 15,
+                              (GPRs[AddressReg] & 15) ? "yes" : "no", mbi.BaseAddress, mbi.RegionSize,
+                              mbi.Protect, type, mbi.State);"""
+
+          new = """#ifdef FEX_IOS_HOST
+            LogMan::Msg::EFmt("[caspal128] MISALIGNED-UNSUPPORTED Size={} addrReg=x{} addr={:#x} misalign={} "
+                              "crosses16B={}",
+                              Size, AddressReg, GPRs[AddressReg], GPRs[AddressReg] & 15,
+                              (GPRs[AddressReg] & 15) ? "yes" : "no");
+          #else
+            MEMORY_BASIC_INFORMATION mbi {};
+            const char* type = "?";
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(GPRs[AddressReg]), &mbi, sizeof(mbi))) {
+              type = mbi.Type == MEM_IMAGE ? "MEM_IMAGE" : mbi.Type == MEM_MAPPED ? "MEM_MAPPED" : "MEM_PRIVATE";
+            }
+            LogMan::Msg::EFmt("[caspal128] MISALIGNED-UNSUPPORTED Size={} addrReg=x{} addr={:#x} misalign={} "
+                              "crosses16B={} | region base={} size={:#x} prot={:#x} type={} state={:#x}",
+                              Size, AddressReg, GPRs[AddressReg], GPRs[AddressReg] & 15,
+                              (GPRs[AddressReg] & 15) ? "yes" : "no", mbi.BaseAddress, mbi.RegionSize,
+                              mbi.Protect, type, mbi.State);
+          #endif"""
+
+          if old not in text:
+              raise SystemExit("ERROR: expected FEX Arm64.cpp block was not found; refusing to patch.")
+
+          if "#ifdef FEX_IOS_HOST" in text[text.index(old) - 100:text.index(old) + len(old) + 100]:
+              raise SystemExit("ERROR: FEX iOS patch appears to have already been applied.")
+
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+          echo "=== Patched FEX Arm64.cpp ==="
+          grep -n -A24 -B4 'MISALIGNED-UNSUPPORTED' "$FEX_FILE"
+
       - name: Build FEX for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
