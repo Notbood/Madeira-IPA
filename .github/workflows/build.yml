@@ -400,21 +400,106 @@ jobs:
             fex-build.log
           if-no-files-found: ignore
 
+      - name: Restore LLVM 15 (iOS) cache
+        id: llvm-ios-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            toolchains/llvm-project
+            toolchains/llvm-ios-build
+          key: madeira-llvm15.0.7-ios18-v1
+
+      - name: Build LLVM 15 for iOS
+        if: steps.llvm-ios-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          JOBS="$(sysctl -n hw.ncpu)"
+          SRC="$PWD/toolchains/llvm-project"
+          HOST="$PWD/toolchains/llvm-host-build"
+          IOS="$PWD/toolchains/llvm-ios-build"
+
+          if [ ! -d "$SRC/.git" ]; then
+            git clone --depth 1 --branch llvmorg-15.0.7 \
+              https://github.com/llvm/llvm-project.git "$SRC"
+          fi
+
+          # Apple ld rejects --gc-sections; treat iOS like Darwin
+          perl -0pi -e 's/MATCHES "Darwin"/MATCHES "Darwin|iOS"/' \
+            "$SRC/llvm/cmake/modules/AddLLVM.cmake"
+
+          cmake -S "$SRC/llvm" -B "$HOST" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF
+          cmake --build "$HOST" --target llvm-tblgen --parallel "$JOBS"
+
+          cmake -S "$SRC/llvm" -B "$IOS" -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TABLEGEN="$HOST/bin/llvm-tblgen" \
+            -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DLLVM_INCLUDE_TOOLS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_TARGETS_TO_BUILD=""
+          cmake --build "$IOS" --parallel "$JOBS"
+
+          ls "$IOS"/lib/libLLVM*.a
+          find "$IOS" -name '*.o' -delete
+
+      - name: Save LLVM 15 (iOS) cache
+        if: steps.llvm-ios-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            toolchains/llvm-project
+            toolchains/llvm-ios-build
+          key: madeira-llvm15.0.7-ios18-v1
+
       - name: Build DXMT for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+          xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1 || true
 
-          bash build/dxmt-ios/build.sh
+          # Metal shader headers that airconv includes
+          OUT=build/dxmt-ios/shader-headers
+          mkdir -p "$OUT"
+          for name in air_msad air_samplepos air_tessellation; do
+            xcrun -sdk macosx metal -o "$OUT/$name.air" \
+              -c "research/dxmt/src/airconv/shaders/$name.metal" \
+              -std=metal3.1 --target=air64-apple-macos14.0
+            xxd -n "$name" -i "$OUT/$name.air" "$OUT/$name.h"
+          done
 
-          if [ -f build/dxmt-ios/libdxmt_unix.a ] && \
-             [ -f build/dxmt-ios/libdxmt_combined.a ]; then
-            echo "DXMT static libraries were produced."
-          else
-            echo "ERROR: DXMT build completed without the expected static libraries."
-            find build/dxmt-ios -maxdepth 2 -type f -print | sort || true
+          if ! bash build/dxmt-ios/build.sh; then
+            for f in build/dxmt-ios/obj/*.err; do
+              echo "=== $f"
+              head -20 "$f"
+            done
             exit 1
           fi
+
+          # Combine DXMT objects + LLVM libs into the archive the app links
+          shopt -s nullglob
+          objs=(build/dxmt-ios/obj/*.o)
+          llvm_libs=(toolchains/llvm-ios-build/lib/*.a)
+          (( ${#objs[@]} > 0 )) || { echo "No DXMT objects"; exit 1; }
+          (( ${#llvm_libs[@]} > 0 )) || { echo "No LLVM libs"; exit 1; }
+          xcrun -sdk iphoneos libtool -static \
+            -o build/dxmt-ios/libdxmt_combined.a "${objs[@]}" "${llvm_libs[@]}"
+          cp build/dxmt-ios/libdxmt_combined.a app/Madeira/libdxmt_combined.a
+
 
       - name: Supply VC++ runtime folder
         run: |
