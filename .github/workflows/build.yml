@@ -360,6 +360,7 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+
           cmake -S FEX -B FEX/build-ios -G Ninja \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_SYSTEM_PROCESSOR=arm64 \
@@ -388,6 +389,7 @@ jobs:
             echo "Unexpected FEX build failure"
             exit 1
           fi
+
           test -s FEX/build-ios/FEXCore/Source/libFEXCore.a
 
       - name: Upload FEX logs
@@ -413,6 +415,7 @@ jobs:
         if: steps.llvm-ios-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+
           JOBS="$(sysctl -n hw.ncpu)"
           SRC="$PWD/toolchains/llvm-project"
           HOST="$PWD/toolchains/llvm-host-build"
@@ -423,9 +426,33 @@ jobs:
               https://github.com/llvm/llvm-project.git "$SRC"
           fi
 
-          # Apple ld rejects --gc-sections; treat iOS like Darwin
-          perl -0pi -e 's/MATCHES "Darwin"/MATCHES "Darwin|iOS"/' \
-            "$SRC/llvm/cmake/modules/AddLLVM.cmake"
+          # Apple ld rejects --gc-sections; patch only LLVM's add_link_opts Darwin branch
+          python3 - "$SRC/llvm/cmake/modules/AddLLVM.cmake" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+
+          old = """    if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+            # ld64's implementation of -dead_strip breaks tools that use plugins.
+            set_property(TARGET ${target_name} APPEND_STRING PROPERTY
+                         LINK_FLAGS " -Wl,-dead_strip")
+          """
+
+          new = """    if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin|iOS")
+            # ld64's implementation of -dead_strip breaks tools that use plugins.
+            set_property(TARGET ${target_name} APPEND_STRING PROPERTY
+                         LINK_FLAGS " -Wl,-dead_strip")
+          """
+
+          if old not in text:
+              raise SystemExit(
+                  "ERROR: expected LLVM add_link_opts Darwin block was not found"
+              )
+
+          path.write_text(text.replace(old, new, 1))
+          PY
 
           cmake -S "$SRC/llvm" -B "$HOST" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -434,6 +461,7 @@ jobs:
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_ENABLE_ZLIB=OFF
+
           cmake --build "$HOST" --target llvm-tblgen --parallel "$JOBS"
 
           cmake -S "$SRC/llvm" -B "$IOS" -G Ninja \
@@ -452,6 +480,7 @@ jobs:
             -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_ENABLE_ZLIB=OFF \
             -DLLVM_TARGETS_TO_BUILD=""
+
           cmake --build "$IOS" --parallel "$JOBS"
 
           ls "$IOS"/lib/libLLVM*.a
@@ -470,11 +499,13 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+
           xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1 || true
 
           # Metal shader headers that airconv includes
           OUT=build/dxmt-ios/shader-headers
           mkdir -p "$OUT"
+
           for name in air_msad air_samplepos air_tessellation; do
             xcrun -sdk macosx metal -o "$OUT/$name.air" \
               -c "research/dxmt/src/airconv/shaders/$name.metal" \
@@ -494,12 +525,14 @@ jobs:
           shopt -s nullglob
           objs=(build/dxmt-ios/obj/*.o)
           llvm_libs=(toolchains/llvm-ios-build/lib/*.a)
+
           (( ${#objs[@]} > 0 )) || { echo "No DXMT objects"; exit 1; }
           (( ${#llvm_libs[@]} > 0 )) || { echo "No LLVM libs"; exit 1; }
+
           xcrun -sdk iphoneos libtool -static \
             -o build/dxmt-ios/libdxmt_combined.a "${objs[@]}" "${llvm_libs[@]}"
-          cp build/dxmt-ios/libdxmt_combined.a app/Madeira/libdxmt_combined.a
 
+          cp build/dxmt-ios/libdxmt_combined.a app/Madeira/libdxmt_combined.a
 
       - name: Supply VC++ runtime folder
         run: |
