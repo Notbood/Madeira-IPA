@@ -323,19 +323,23 @@ jobs:
 
           linker_text = linker_gc_path.read_text()
 
-          old_linker = """  if (CMAKE_BUILD_TYPE MATCHES "RELEASE")
-            target_link_options(${target} PRIVATE
-              "LINKER:--gc-sections"
-              "LINKER:--strip-all"
-              "LINKER:--as-needed")
-          endif()"""
+          old_linker = """macro(LinkerGC target)
+            if (CMAKE_BUILD_TYPE MATCHES "RELEASE")
+              target_link_options(${target} PRIVATE
+                "LINKER:--gc-sections"
+                "LINKER:--strip-all"
+                "LINKER:--as-needed")
+            endif()
+          endmacro()"""
 
-          new_linker = """  if (CMAKE_BUILD_TYPE MATCHES "RELEASE" AND NOT APPLE)
-            target_link_options(${target} PRIVATE
-              "LINKER:--gc-sections"
-              "LINKER:--strip-all"
-              "LINKER:--as-needed")
-          endif()"""
+          new_linker = """macro(LinkerGC target)
+            if (CMAKE_BUILD_TYPE MATCHES "RELEASE" AND NOT APPLE)
+              target_link_options(${target} PRIVATE
+                "LINKER:--gc-sections"
+                "LINKER:--strip-all"
+                "LINKER:--as-needed")
+            endif()
+          endmacro()"""
 
           if old_linker not in linker_text:
               raise SystemExit(
