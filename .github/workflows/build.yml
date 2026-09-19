@@ -266,7 +266,7 @@ jobs:
           bash build/wineserver/build.sh
 
       - name: Patch FEX for iOS host compatibility
-        if: false
+        if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
 
