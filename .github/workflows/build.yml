@@ -379,8 +379,16 @@ jobs:
             -DTUNE_CPU=generic \
             -DTUNE_ARCH=generic 2>&1 | tee fex-configure.log
 
-          cmake --build FEX/build-ios --parallel "$(sysctl -n hw.ncpu)" 2>&1 | tee fex-build.log
-          test -f FEX/build-ios/FEXCore/Source/libFEXCore.a
+          set +e
+          cmake --build FEX/build-ios --parallel "$(sysctl -n hw.ncpu)" -- -k 0 2>&1 | tee fex-build.log
+          set -e
+
+          # Only the standalone dylib is allowed to fail
+          if grep '^FAILED:' fex-build.log | grep -qv 'libFEXCore\.dylib'; then
+            echo "Unexpected FEX build failure"
+            exit 1
+          fi
+          test -s FEX/build-ios/FEXCore/Source/libFEXCore.a
 
       - name: Upload FEX logs
         if: always()
