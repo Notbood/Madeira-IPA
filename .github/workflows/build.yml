@@ -121,7 +121,6 @@ jobs:
               --without-x \
               --without-freetype
           fi
-
           make -j"$(sysctl -n hw.ncpu)" dlls/ntdll
 
       - name: Generate required Wine headers
@@ -136,7 +135,6 @@ jobs:
           test -x "$WIDL"
 
           mkdir -p "$WINE_WINDOWS"
-
           echo "Using widl: $WIDL"
           echo "Wine source: $WINE_SRC"
           echo "Wine Windows headers: $WINE_WINDOWS"
@@ -150,7 +148,6 @@ jobs:
             output="$WINE_WINDOWS/${name}.h"
 
             echo "Generating $output from $idl"
-
             if "$WIDL" \
               -I"$WINE_SRC/include" \
               -I"$WINE_WINDOWS" \
@@ -165,7 +162,6 @@ jobs:
           done
 
           echo "Generated $generated Wine headers."
-
           echo "=== Required Wine headers ==="
           find "$WINE_WINDOWS" \
             \( -name 'dwrite.h' \
@@ -220,7 +216,6 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-
           WINE_SRC="$GITHUB_WORKSPACE/wine"
           BUILD_DIR="$WINE_SRC/build-macos"
           APP_LIB="$GITHUB_WORKSPACE/app/Madeira/libwineserver.a"
@@ -236,7 +231,6 @@ jobs:
               CFLAGS="-arch arm64" \
               LDFLAGS="-arch arm64"
           fi
-
           cd "$BUILD_DIR"
 
           make -j"$(sysctl -n hw.ncpu)" server/wineserver
@@ -253,7 +247,6 @@ jobs:
           /usr/bin/ar rcs "$APP_LIB" server/*.o
 
           test -s "$APP_LIB"
-
           echo "=== Base libwineserver.a ==="
           file "$APP_LIB"
           ls -lh "$APP_LIB"
@@ -269,7 +262,6 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-
           FEX_FILE="$GITHUB_WORKSPACE/FEX/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp"
           LINKER_GC_FILE="$GITHUB_WORKSPACE/FEX/Data/CMake/LinkerGC.cmake"
 
@@ -284,7 +276,6 @@ jobs:
           linker_gc_path = Path(sys.argv[2])
 
           text = fex_path.read_text()
-
           old = """  MEMORY_BASIC_INFORMATION mbi {};
             const char* type = "?";
             if (VirtualQuery(reinterpret_cast<LPCVOID>(GPRs[AddressReg]), &mbi, sizeof(mbi))) {
@@ -295,7 +286,6 @@ jobs:
                               Size, AddressReg, GPRs[AddressReg], GPRs[AddressReg] & 15,
                               (GPRs[AddressReg] & 15) ? "yes" : "no", mbi.BaseAddress, mbi.RegionSize,
                               mbi.Protect, type, mbi.State);"""
-
           new = """#ifdef FEX_IOS_HOST
             LogMan::Msg::EFmt("[caspal128] MISALIGNED-UNSUPPORTED Size={} addrReg=x{} addr={:#x} misalign={} "
                               "crosses16B={}",
@@ -313,7 +303,6 @@ jobs:
                               (GPRs[AddressReg] & 15) ? "yes" : "no", mbi.BaseAddress, mbi.RegionSize,
                               mbi.Protect, type, mbi.State);
           #endif"""
-
           if old not in text:
               raise SystemExit(
                   "ERROR: expected FEX Arm64.cpp block was not found; refusing to patch."
@@ -322,7 +311,6 @@ jobs:
           fex_path.write_text(text.replace(old, new, 1))
 
           linker_text = linker_gc_path.read_text()
-
           old_linker = """macro(LinkerGC target)
             if (CMAKE_BUILD_TYPE MATCHES "RELEASE")
               target_link_options(${target} PRIVATE
@@ -331,7 +319,6 @@ jobs:
                 "LINKER:--as-needed")
             endif()
           endmacro()"""
-
           new_linker = """macro(LinkerGC target)
             if (CMAKE_BUILD_TYPE MATCHES "RELEASE" AND NOT APPLE)
               target_link_options(${target} PRIVATE
@@ -340,7 +327,6 @@ jobs:
                 "LINKER:--as-needed")
             endif()
           endmacro()"""
-
           if old_linker not in linker_text:
               raise SystemExit(
                   "ERROR: expected FEX LinkerGC.cmake block was not found; refusing to patch."
@@ -360,7 +346,6 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-
           cmake -S FEX -B FEX/build-ios -G Ninja \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_SYSTEM_PROCESSOR=arm64 \
@@ -379,7 +364,6 @@ jobs:
             -DENABLE_CCACHE=OFF \
             -DTUNE_CPU=generic \
             -DTUNE_ARCH=generic 2>&1 | tee fex-configure.log
-
           set +e
           cmake --build FEX/build-ios --parallel "$(sysctl -n hw.ncpu)" -- -k 0 2>&1 | tee fex-build.log
           set -e
@@ -389,7 +373,6 @@ jobs:
             echo "Unexpected FEX build failure"
             exit 1
           fi
-
           test -s FEX/build-ios/FEXCore/Source/libFEXCore.a
 
       - name: Upload FEX logs
@@ -415,7 +398,6 @@ jobs:
         if: steps.llvm-ios-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-
           JOBS="$(sysctl -n hw.ncpu)"
           SRC="$PWD/toolchains/llvm-project"
           HOST="$PWD/toolchains/llvm-host-build"
@@ -426,32 +408,28 @@ jobs:
               https://github.com/llvm/llvm-project.git "$SRC"
           fi
 
-          # Apple ld rejects --gc-sections; patch only LLVM's add_link_opts Darwin branch
+          # Apple ld rejects --gc-sections; exclude iOS from LLVM's
+          # non-Darwin --gc-sections branch.
           python3 - "$SRC/llvm/cmake/modules/AddLLVM.cmake" <<'PY'
-          from pathlib import Path
           import sys
+          from pathlib import Path
 
           path = Path(sys.argv[1])
           text = path.read_text()
 
-          old = """    if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-            # ld64's implementation of -dead_strip breaks tools that use plugins.
-            set_property(TARGET ${target_name} APPEND_STRING PROPERTY
-                         LINK_FLAGS " -Wl,-dead_strip")
-          """
-
-          new = """    if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin|iOS")
-            # ld64's implementation of -dead_strip breaks tools that use plugins.
-            set_property(TARGET ${target_name} APPEND_STRING PROPERTY
-                         LINK_FLAGS " -Wl,-dead_strip")
-          """
+          old = 'elseif(NOT MSVC AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")'
+          new = 'elseif(NOT MSVC AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390|iOS")'
 
           if old not in text:
               raise SystemExit(
-                  "ERROR: expected LLVM add_link_opts Darwin block was not found"
+                  "ERROR: expected LLVM 15.0.7 --gc-sections condition was not found; refusing to patch."
               )
 
-          path.write_text(text.replace(old, new, 1))
+          if new in text:
+              print("LLVM iOS --gc-sections patch already present.")
+          else:
+              path.write_text(text.replace(old, new, 1))
+              print("Patched LLVM 15.0.7 AddLLVM.cmake for iOS.")
           PY
 
           cmake -S "$SRC/llvm" -B "$HOST" -G Ninja \
@@ -499,13 +477,11 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-
           xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1 || true
 
           # Metal shader headers that airconv includes
           OUT=build/dxmt-ios/shader-headers
           mkdir -p "$OUT"
-
           for name in air_msad air_samplepos air_tessellation; do
             xcrun -sdk macosx metal -o "$OUT/$name.air" \
               -c "research/dxmt/src/airconv/shaders/$name.metal" \
@@ -584,7 +560,6 @@ jobs:
           set -euxo pipefail
 
           rm -rf derived
-
           xcodebuild \
             -project app/Madeira.xcodeproj \
             -scheme Madeira \
@@ -650,7 +625,6 @@ jobs:
             echo "**Xcode:**"
             xcodebuild -version | head -2
             echo
-
             if [ -f Madeira.ipa ]; then
               echo "**IPA:** generated"
               echo "**SHA-256:** \`$(shasum -a 256 Madeira.ipa | awk '{print $1}')\`"
