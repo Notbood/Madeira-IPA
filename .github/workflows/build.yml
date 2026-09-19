@@ -372,7 +372,8 @@ jobs:
             -DENABLE_STATIC_LIBS=ON \
             -DBUILD_TESTING=OFF \
             -DTUNE_CPU=none
-
+            -DENABLE_LTO=OFF
+            
           cmake --build FEX/build-ios -j"$(sysctl -n hw.ncpu)"
 
       - name: Build DXMT for iOS
