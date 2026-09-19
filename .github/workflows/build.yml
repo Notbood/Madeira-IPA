@@ -271,15 +271,19 @@ jobs:
           set -euxo pipefail
 
           FEX_FILE="$GITHUB_WORKSPACE/FEX/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp"
+          LINKER_GC_FILE="$GITHUB_WORKSPACE/FEX/Data/CMake/LinkerGC.cmake"
 
           test -f "$FEX_FILE"
+          test -f "$LINKER_GC_FILE"
 
-          python3 - "$FEX_FILE" <<'PY'
+          python3 - "$FEX_FILE" "$LINKER_GC_FILE" <<'PY'
           import sys
           from pathlib import Path
 
-          path = Path(sys.argv[1])
-          text = path.read_text()
+          fex_path = Path(sys.argv[1])
+          linker_gc_path = Path(sys.argv[2])
+
+          text = fex_path.read_text()
 
           old = """  MEMORY_BASIC_INFORMATION mbi {};
             const char* type = "?";
@@ -311,16 +315,42 @@ jobs:
           #endif"""
 
           if old not in text:
-              raise SystemExit("ERROR: expected FEX Arm64.cpp block was not found; refusing to patch.")
+              raise SystemExit(
+                  "ERROR: expected FEX Arm64.cpp block was not found; refusing to patch."
+              )
 
-          if "#ifdef FEX_IOS_HOST" in text[text.index(old) - 100:text.index(old) + len(old) + 100]:
-              raise SystemExit("ERROR: FEX iOS patch appears to have already been applied.")
+          fex_path.write_text(text.replace(old, new, 1))
 
-          path.write_text(text.replace(old, new, 1))
+          linker_text = linker_gc_path.read_text()
+
+          old_linker = """  if (CMAKE_BUILD_TYPE MATCHES "RELEASE")
+            target_link_options(${target} PRIVATE
+              "LINKER:--gc-sections"
+              "LINKER:--strip-all"
+              "LINKER:--as-needed")
+          endif()"""
+
+          new_linker = """  if (CMAKE_BUILD_TYPE MATCHES "RELEASE" AND NOT APPLE)
+            target_link_options(${target} PRIVATE
+              "LINKER:--gc-sections"
+              "LINKER:--strip-all"
+              "LINKER:--as-needed")
+          endif()"""
+
+          if old_linker not in linker_text:
+              raise SystemExit(
+                  "ERROR: expected FEX LinkerGC.cmake block was not found; refusing to patch."
+              )
+
+          linker_gc_path.write_text(linker_text.replace(old_linker, new_linker, 1))
+
           PY
 
-          echo "=== Patched FEX Arm64.cpp ==="
+          echo "=== FEX iOS Arm64.cpp patch ==="
           grep -n -A24 -B4 'MISALIGNED-UNSUPPORTED' "$FEX_FILE"
+
+          echo "=== FEX LinkerGC.cmake patch ==="
+          cat "$LINKER_GC_FILE"
 
       - name: Build FEX for iOS
         if: steps.native-cache.outputs.cache-hit != 'true'
