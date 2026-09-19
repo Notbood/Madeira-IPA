@@ -277,6 +277,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-DFEX_IOS_HOST" \
             -DENABLE_STATIC_LIBS=ON \
             -DBUILD_TESTING=OFF \
             -DTUNE_CPU=none
