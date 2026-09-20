@@ -85,7 +85,7 @@ jobs:
 
       - name: Cache Madeira native build products
         id: native-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             FEX/build-ios
@@ -623,6 +623,16 @@ jobs:
             }
             file "$f"
           done
+
+      - name: Select Xcode 26 for the app build
+        run: |
+          set -euxo pipefail
+          ls -d /Applications/Xcode_26*.app
+          XCODE="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
+          xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1 || true
 
       - name: Show Xcode project targets
         run: |
