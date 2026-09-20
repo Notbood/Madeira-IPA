@@ -579,63 +579,31 @@ jobs:
 
           cp build/dxmt-ios/libdxmt_combined.a app/Madeira/libdxmt_combined.a
 
+      - name: Save native build cache
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            FEX/build-ios
+            wine/build-arm64ec
+            wine/build-macos
+            build/gnutls-ios/obj
+            build/freetype-ios/obj
+            build/ntdll-unix/obj
+            build/win32u-unix/obj
+            build/wineserver/obj
+            build/dxmt-ios/obj
+            build/dxmt-ios/shader-headers
+            build/dxmt-ios/libdxmt_unix.a
+            build/dxmt-ios/libdxmt_combined.a
+            app/Madeira/libntdll_unix.a
+            app/Madeira/libwin32u_unix.a
+            app/Madeira/libwineserver.a
+            app/Madeira/libdxmt_combined.a
+          key: madeira-native-${{ steps.source.outputs.sha }}-xcode16.4
+
       - name: Supply VC++ runtime folder
-        run: |
-          set -euxo pipefail
-
-          mkdir -p app/Madeira/x86_64-vcruntime
-
-          brew install sevenzip
-
-          TMP="$RUNNER_TEMP/vcredist"
-          rm -rf "$TMP"
-          mkdir -p "$TMP"
-
-          curl -fL \
-            https://aka.ms/vc14/vc_redist.x64.exe \
-            -o "$TMP/VC_redist.x64.exe"
-
-          required=(
-            concrt140.dll
-            msvcp140.dll
-            msvcp140_1.dll
-            msvcp140_2.dll
-            msvcp140_atomic_wait.dll
-            msvcp140_codecvt_ids.dll
-            vcamp140.dll
-            vccorlib140.dll
-            vcomp140.dll
-            vcruntime140.dll
-            vcruntime140_1.dll
-            vcruntime140_threads.dll
-          )
-
-          # The Microsoft VC_redist.x64.exe contains the VC++ CAB as
-          # an embedded archive. 7-Zip can read the nested archive
-          # directly; no intermediate CAB file is required.
-          for dll in "${required[@]}"; do
-            7zz e "$TMP/VC_redist.x64.exe" \
-              -o"$TMP/out" \
-              "$dll"
-          done
-
-          for dll in "${required[@]}"; do
-            if [ ! -f "$TMP/out/$dll" ]; then
-              echo "ERROR: Missing required VC++ runtime: $dll"
-              exit 1
-            fi
-
-            cp "$TMP/out/$dll" "app/Madeira/x86_64-vcruntime/$dll"
-          done
-
-          echo "VC++ runtime DLLs supplied:"
-          ls -l app/Madeira/x86_64-vcruntime/
-
-          for dll in "${required[@]}"; do
-            test -f "app/Madeira/x86_64-vcruntime/$dll"
-          done
-
-          echo "All required VC++ runtime DLLs are present."
+        run: bash tools/fetch-vcruntime.sh
 
       - name: Verify required native libraries
         run: |
