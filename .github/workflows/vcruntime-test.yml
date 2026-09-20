@@ -1,0 +1,16 @@
+name: Test VC++ runtime fetch
+on: workflow_dispatch
+jobs:
+  fetch:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tools/fetch-vcruntime.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vcruntime-debug
+          path: |
+            vcruntime-inventory.txt
+            app/Madeira/x86_64-vcruntime
+          if-no-files-found: ignore
