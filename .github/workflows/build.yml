@@ -433,7 +433,7 @@ jobs:
               )
 
           # Make add_llvm_symbol_exports() treat iOS like Darwin.
-          marker = "function(add_llvm_symbol_exports target_name)"
+          marker = "function(add_llvm_symbol_exports target_name export_file)"
           start = text.find(marker)
 
           if start == -1:
@@ -441,7 +441,8 @@ jobs:
                   "ERROR: add_llvm_symbol_exports() was not found; refusing to patch."
               )
 
-          end = text.find("endfunction()", start)
+          end_marker = "endfunction(add_llvm_symbol_exports)"
+          end = text.find(end_marker, start)
 
           if end == -1:
               raise SystemExit(
