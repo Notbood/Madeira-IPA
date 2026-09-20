@@ -748,21 +748,29 @@ jobs:
           echo "Built app: $APP_PATH"
           file "$APP_PATH/Madeira"
 
-      - name: Package unsigned IPA
+      - name: Package IPA (ad-hoc signed with entitlements)
         run: |
           set -euxo pipefail
 
           rm -rf Payload Madeira.ipa
           mkdir -p Payload
-
           cp -R "$APP_PATH" Payload/Madeira.app
 
-          /usr/bin/zip -qry Madeira.ipa Payload
+          find app -name '*.entitlements' -print
+          ENT="$(grep -rl 'increased-memory-limit' app --include='*.entitlements' | head -1 || true)"
+          [ -n "$ENT" ] || ENT="$(find app -name '*.entitlements' | head -1)"
+          test -n "$ENT"
+          echo "Using entitlements: $ENT"
+          cat "$ENT"
 
+          codesign --force --deep --sign - --timestamp=none \
+            --entitlements "$ENT" Payload/Madeira.app
+          codesign -d --entitlements :- Payload/Madeira.app
+
+          /usr/bin/zip -qry Madeira.ipa Payload
           rm -rf Payload
 
           test -s Madeira.ipa
-
           ls -lh Madeira.ipa
           shasum -a 256 Madeira.ipa | tee Madeira.ipa.sha256
 
