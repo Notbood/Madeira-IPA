@@ -579,6 +579,60 @@ jobs:
 
           cp build/dxmt-ios/libdxmt_combined.a app/Madeira/libdxmt_combined.a
 
+      - name: Rebuild wineserver archive for iOS
+        run: |
+          set -euxo pipefail
+
+          WINE_SRC="$GITHUB_WORKSPACE/wine"
+          WS="$GITHUB_WORKSPACE/build/wineserver"
+          SHIMS="$GITHUB_WORKSPACE/build/ntdll-unix/shims"
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          BASE="$WS/obj/ios-base"
+          APP_LIB="$GITHUB_WORKSPACE/app/Madeira/libwineserver.a"
+
+          test -f "$WINE_SRC/build-macos/include/config.h"
+          for f in config_ios.h unicode_fix.h wineserver_ios_kill.h; do
+            test -f "$WS/$f"
+          done
+
+          rm -rf "$BASE" "$APP_LIB" "$WS/obj/libwineserver.a"
+          mkdir -p "$BASE"
+
+          # sources that build.sh replaces with its own iOS versions
+          SKIP=" async.c class.c fd.c mach.c main.c mapping.c object.c process.c queue.c region.c request.c sock.c thread.c unicode.c user.c window.c winstation.c "
+
+          FLAGS=(
+            -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 -O2
+            -I"$WINE_SRC/include" -I"$WINE_SRC/include/wine"
+            -I"$WINE_SRC/build-macos/include" -I"$WINE_SRC/build-macos/server"
+            -I"$WS" -I"$WINE_SRC/server" -I"$SHIMS"
+            -include "$WS/config_ios.h" -include stdarg.h
+            -include "$WS/unicode_fix.h" -include "$WS/wineserver_ios_kill.h"
+            -DBINDIR=\"/usr/local/bin\" -DDATADIR=\"/usr/local/share\"
+            -D__WINESRC__ -DWINE_IOS=1 -Dmain=wineserver_main
+            -Wno-implicit-function-declaration
+          )
+
+          objs=()
+          while IFS= read -r src; do
+            case "$SKIP" in *" $src "*) continue ;; esac
+            xcrun -sdk iphoneos clang "${FLAGS[@]}" -c "$WINE_SRC/server/$src" -o "$BASE/${src%.c}.o"
+            objs+=("$BASE/${src%.c}.o")
+          done < <(awk '
+            /^SOURCES[[:space:]]*=/ { on = 1; sub(/^SOURCES[[:space:]]*=/, "") }
+            on {
+              cont = ($0 ~ /\\[[:space:]]*$/)
+              gsub(/\\/, "")
+              for (i = 1; i <= NF; i++) if ($i ~ /\.c$/) print $i
+              if (!cont) exit
+            }' "$WINE_SRC/server/Makefile.in")
+
+          (( ${#objs[@]} > 0 ))
+          /usr/bin/ar rcs "$WS/obj/libwineserver.a" "${objs[@]}"
+          cp "$WS/obj/libwineserver.a" "$APP_LIB"
+
+          bash build/wineserver/build.sh
+
       - name: Save native build cache
         if: steps.native-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -623,6 +677,25 @@ jobs:
             }
             file "$f"
           done
+
+      - name: Check native libraries are iOS builds
+        run: |
+          set -euo pipefail
+          bad=0
+          for lib in app/Madeira/*.a; do
+            hits="$(xcrun otool -l "$lib" | awk '
+              /^[^ ].*:$/ { member = $0 }
+              /platform (MACOS|1)[[:space:]]*$/ || /LC_VERSION_MIN_MACOSX/ { print member }
+            ' | sort -u)"
+            if [ -n "$hits" ]; then
+              echo "macOS-built objects in $lib:"
+              echo "$hits" | head -20
+              bad=1
+            else
+              echo "OK $lib"
+            fi
+          done
+          exit "$bad"
 
       - name: Select Xcode 26 for the app build
         run: |
