@@ -585,17 +585,61 @@ jobs:
 
           mkdir -p app/Madeira/x86_64-vcruntime
 
-          shopt -s nullglob
-          dlls=(app/Madeira/x86_64-vcruntime/*.dll)
+          brew install sevenzip
 
-          if [ "${#dlls[@]}" -eq 0 ]; then
-            echo "No VC++ runtime DLLs found."
-            echo "See tools/fetch-vcruntime.md in the Madeira source tree."
-            echo "Supply the required unmodified Microsoft redistributables and rerun."
+          TMP="$RUNNER_TEMP/vcredist"
+          rm -rf "$TMP"
+          mkdir -p "$TMP"
+
+          curl -fL \
+            https://aka.ms/vc14/vc_redist.x64.exe \
+            -o "$TMP/VC_redist.x64.exe"
+
+          7zz x "$TMP/VC_redist.x64.exe" -o"$TMP/extracted"
+
+          CAB="$(find "$TMP/extracted" -type f -iname '*.cab' -print -quit)"
+
+          if [ -z "$CAB" ]; then
+            echo "ERROR: VC++ redistributable CAB was not found."
             exit 1
           fi
 
-          printf '%s\n' "${dlls[@]}"
+          7zz x "$CAB" -o"$TMP/cab"
+
+          required=(
+            concrt140.dll
+            msvcp140.dll
+            msvcp140_1.dll
+            msvcp140_2.dll
+            msvcp140_atomic_wait.dll
+            msvcp140_codecvt_ids.dll
+            vcamp140.dll
+            vccorlib140.dll
+            vcomp140.dll
+            vcruntime140.dll
+            vcruntime140_1.dll
+            vcruntime140_threads.dll
+          )
+
+          for dll in "${required[@]}"; do
+            found="$(find "$TMP/cab" -type f -iname "$dll" -print -quit)"
+
+            if [ -z "$found" ]; then
+              echo "ERROR: Missing required VC++ runtime: $dll"
+              exit 1
+            fi
+
+            cp "$found" "app/Madeira/x86_64-vcruntime/$dll"
+          done
+
+          echo "VC++ runtime DLLs supplied:"
+          ls -l app/Madeira/x86_64-vcruntime/
+
+          for dll in "${required[@]}"; do
+            test -f "app/Madeira/x86_64-vcruntime/$dll"
+          done
+
+          echo "All required VC++ runtime DLLs are present."
 
       - name: Verify required native libraries
         run: |
