@@ -595,22 +595,6 @@ jobs:
             https://aka.ms/vc14/vc_redist.x64.exe \
             -o "$TMP/VC_redist.x64.exe"
 
-          # The Microsoft installer is a self-extracting EXE containing
-          # an embedded CAB. 7-Zip exposes that CAB as archive [0].
-          7zz x "$TMP/VC_redist.x64.exe" \
-            -o"$TMP/extracted" \
-            '[0]'
-
-          CAB="$TMP/extracted/[0]"
-
-          if [ ! -f "$CAB" ]; then
-            echo "ERROR: Embedded VC++ CAB was not extracted."
-            find "$TMP/extracted" -maxdepth 2 -type f -print
-            exit 1
-          fi
-
-          7zz x "$CAB" -o"$TMP/cab"
-
           required=(
             concrt140.dll
             msvcp140.dll
@@ -626,15 +610,22 @@ jobs:
             vcruntime140_threads.dll
           )
 
+          # The Microsoft VC_redist.x64.exe contains the VC++ CAB as
+          # an embedded archive. 7-Zip can read the nested archive
+          # directly; no intermediate CAB file is required.
           for dll in "${required[@]}"; do
-            found="$(find "$TMP/cab" -type f -iname "$dll" -print -quit)"
+            7zz e "$TMP/VC_redist.x64.exe" \
+              -o"$TMP/out" \
+              "$dll"
+          done
 
-            if [ -z "$found" ]; then
+          for dll in "${required[@]}"; do
+            if [ ! -f "$TMP/out/$dll" ]; then
               echo "ERROR: Missing required VC++ runtime: $dll"
               exit 1
             fi
 
-            cp "$found" "app/Madeira/x86_64-vcruntime/$dll"
+            cp "$TMP/out/$dll" "app/Madeira/x86_64-vcruntime/$dll"
           done
 
           echo "VC++ runtime DLLs supplied:"
