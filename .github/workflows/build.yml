@@ -715,6 +715,13 @@ jobs:
             -project app/Madeira.xcodeproj \
             -list
 
+      - name: Lower JIT pool to 384 MB
+        run: |
+          set -euxo pipefail
+          perl -pi -e 's/var poolSizeMB = 896\b/var poolSizeMB = 384/' app/Madeira/ContentView.swift
+          grep -n 'var poolSizeMB' app/Madeira/ContentView.swift
+          grep -q 'var poolSizeMB = 384' app/Madeira/ContentView.swift
+
       - name: Build Madeira app (unsigned)
         run: |
           set -euxo pipefail
