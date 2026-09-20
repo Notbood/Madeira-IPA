@@ -595,16 +595,9 @@ jobs:
             https://aka.ms/vc14/vc_redist.x64.exe \
             -o "$TMP/VC_redist.x64.exe"
 
-          7zz x "$TMP/VC_redist.x64.exe" -o"$TMP/extracted"
+          7zz x "$TMP/VC_redist.x64.exe" -so 0 > "$TMP/vcruntime.cab"
 
-          CAB="$(find "$TMP/extracted" -type f -iname '*.cab' -print -quit)"
-
-          if [ -z "$CAB" ]; then
-            echo "ERROR: VC++ redistributable CAB was not found."
-            exit 1
-          fi
-
-          7zz x "$CAB" -o"$TMP/cab"
+          7zz x "$TMP/vcruntime.cab" -o"$TMP/cab"
 
           required=(
             concrt140.dll
