@@ -409,7 +409,8 @@ jobs:
           fi
 
           # Apple ld rejects --gc-sections; exclude iOS from LLVM's
-          # non-Darwin --gc-sections branch.
+          # non-Darwin --gc-sections branch, and make LLVM's symbol-export
+          # handling recognize iOS as Darwin/Apple.
           python3 - "$SRC/llvm/cmake/modules/AddLLVM.cmake" <<'PY'
           import sys
           from pathlib import Path
@@ -417,20 +418,87 @@ jobs:
           path = Path(sys.argv[1])
           text = path.read_text()
 
-          old = 'elseif(NOT MSVC AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")'
-          new = 'elseif(NOT MSVC AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390|iOS")'
+          # iOS must not use the non-Darwin --gc-sections branch.
+          old_gc = 'elseif(NOT MSVC AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")'
+          new_gc = 'elseif(NOT MSVC AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390|iOS")'
 
-          if old not in text:
+          if old_gc in text:
+              text = text.replace(old_gc, new_gc, 1)
+              print("Patched LLVM 15.0.7 --gc-sections condition for iOS.")
+          elif new_gc in text:
+              print("LLVM iOS --gc-sections patch already present.")
+          else:
               raise SystemExit(
                   "ERROR: expected LLVM 15.0.7 --gc-sections condition was not found; refusing to patch."
               )
 
-          if new in text:
-              print("LLVM iOS --gc-sections patch already present.")
+          # Make add_llvm_symbol_exports() treat iOS like Darwin.
+          marker = "function(add_llvm_symbol_exports target_name)"
+          start = text.find(marker)
+
+          if start == -1:
+              raise SystemExit(
+                  "ERROR: add_llvm_symbol_exports() was not found; refusing to patch."
+              )
+
+          end = text.find("endfunction()", start)
+
+          if end == -1:
+              raise SystemExit(
+                  "ERROR: end of add_llvm_symbol_exports() was not found; refusing to patch."
+              )
+
+          block = text[start:end]
+
+          old_symbols = 'if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")'
+          new_symbols = 'if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin|iOS")'
+
+          if old_symbols in block:
+              block = block.replace(old_symbols, new_symbols, 1)
+              text = text[:start] + block + text[end:]
+              print("Patched LLVM 15.0.7 symbol exports for iOS.")
+          elif new_symbols in block:
+              print("LLVM iOS symbol-export patch already present.")
           else:
-              path.write_text(text.replace(old, new, 1))
-              print("Patched LLVM 15.0.7 AddLLVM.cmake for iOS.")
+              raise SystemExit(
+                  "ERROR: expected Darwin symbol-export condition was not found "
+                  "inside add_llvm_symbol_exports(); refusing to patch."
+              )
+
+          path.write_text(text)
           PY
+
+          cmake -S "$SRC/llvm" -B "$HOST" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF
+
+          cmake --build "$HOST" --target llvm-tblgen --parallel "$JOBS"
+
+          cmake -S "$SRC/llvm" -B "$IOS" -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TABLEGEN="$HOST/bin/llvm-tblgen" \
+            -DLLVM_BUILD_UTILS=OFF \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DLLVM_INCLUDE_TOOLS=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_TARGETS_TO_BUILD=""
+
+          cmake --build "$IOS" --parallel "$JOBS"
+
+          ls "$IOS"/lib/libLLVM*.a
+          find "$IOS" -name '*.o' -delete
 
           cmake -S "$SRC/llvm" -B "$HOST" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
