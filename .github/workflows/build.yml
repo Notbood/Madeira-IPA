@@ -595,9 +595,21 @@ jobs:
             https://aka.ms/vc14/vc_redist.x64.exe \
             -o "$TMP/VC_redist.x64.exe"
 
-          7zz x "$TMP/VC_redist.x64.exe" -so 0 > "$TMP/vcruntime.cab"
+          # The Microsoft installer is a self-extracting EXE containing
+          # an embedded CAB. 7-Zip exposes that CAB as archive [0].
+          7zz x "$TMP/VC_redist.x64.exe" \
+            -o"$TMP/extracted" \
+            '[0]'
 
-          7zz x "$TMP/vcruntime.cab" -o"$TMP/cab"
+          CAB="$TMP/extracted/[0]"
+
+          if [ ! -f "$CAB" ]; then
+            echo "ERROR: Embedded VC++ CAB was not extracted."
+            find "$TMP/extracted" -maxdepth 2 -type f -print
+            exit 1
+          fi
+
+          7zz x "$CAB" -o"$TMP/cab"
 
           required=(
             concrt140.dll
