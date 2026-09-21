@@ -683,14 +683,26 @@ jobs:
         run: |
           set -euxo pipefail
           cd wine/build-arm64ec
-          make -j"$(sysctl -n hw.ncpu)" dlls/sensapi dlls/gdiplus 2>&1 | tail -n 40
 
-          find dlls/sensapi dlls/gdiplus -name '*.dll' -print
+          for t in \
+            dlls/sensapi/arm64ec-windows/sensapi.dll \
+            dlls/sensapi/aarch64-windows/sensapi.dll \
+            dlls/gdiplus/arm64ec-windows/gdiplus.dll \
+            dlls/gdiplus/aarch64-windows/gdiplus.dll; do
+            echo "=== make $t"
+            make -j"$(sysctl -n hw.ncpu)" "$t" 2>&1 | tail -n 25 || true
+          done
+
+          echo "=== generated rules mentioning sensapi"
+          grep -n 'sensapi' Makefile | head -20 || true
+          echo "=== files found"
+          find dlls/sensapi dlls/gdiplus -name '*.dll' -print || true
+
           mkdir -p "$GITHUB_WORKSPACE/extra-dlls"
           for d in sensapi gdiplus; do
             for arch in arm64ec aarch64; do
-              f="$(find dlls/$d -path "*${arch}-windows/*" -name "$d.dll" | head -1)"
-              if [ -n "$f" ]; then
+              f="dlls/$d/${arch}-windows/$d.dll"
+              if [ -f "$f" ]; then
                 mkdir -p "$GITHUB_WORKSPACE/extra-dlls/$arch"
                 cp "$f" "$GITHUB_WORKSPACE/extra-dlls/$arch/"
               fi
