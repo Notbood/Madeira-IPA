@@ -678,8 +678,35 @@ jobs:
             file "$f"
           done
 
-      - name: Check native libraries are iOS builds
+      - name: Build extra Wine DLLs (ARM64EC)
+        continue-on-error: true
         run: |
+          set -euxo pipefail
+          cd wine/build-arm64ec
+          make -j"$(sysctl -n hw.ncpu)" dlls/sensapi dlls/gdiplus 2>&1 | tail -n 40
+
+          find dlls/sensapi dlls/gdiplus -name '*.dll' -print
+          mkdir -p "$GITHUB_WORKSPACE/extra-dlls"
+          for d in sensapi gdiplus; do
+            for arch in arm64ec aarch64; do
+              f="$(find dlls/$d -path "*${arch}-windows/*" -name "$d.dll" | head -1)"
+              if [ -n "$f" ]; then
+                mkdir -p "$GITHUB_WORKSPACE/extra-dlls/$arch"
+                cp "$f" "$GITHUB_WORKSPACE/extra-dlls/$arch/"
+              fi
+            done
+          done
+          ls -lR "$GITHUB_WORKSPACE/extra-dlls"
+
+      - name: Upload extra Wine DLLs
+        uses: actions/upload-artifact@v4
+        with:
+          name: extra-wine-dlls
+          path: extra-dlls
+          if-no-files-found: warn
+
+      - name: Check native libraries are iOS builds
+       run: |
           set -euo pipefail
           bad=0
           for lib in app/Madeira/*.a; do
