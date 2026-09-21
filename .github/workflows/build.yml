@@ -706,7 +706,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Check native libraries are iOS builds
-       run: |
+        run: |
           set -euo pipefail
           bad=0
           for lib in app/Madeira/*.a; do
