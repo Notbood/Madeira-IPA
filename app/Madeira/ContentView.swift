@@ -3,6 +3,7 @@ import UIKit
 import QuartzCore
 import Metal
 import os.log
+import GameController
 
 // 2026-07-03 window-hosted Metal layer.
 //
@@ -171,6 +172,7 @@ final class MetalBackedView: UIView {
             let full = convert(bounds, to: w)
             winios_set_compositor_frame(full.minX, full.minY, full.width, full.height)
         }
+        setupMouseCapture()
     }
 
     // Map touch point in view-local UI points to the 1024×768 logical
@@ -218,6 +220,72 @@ final class MetalBackedView: UIView {
     private let F_MOVE: UInt32 = 0x1, F_LDOWN: UInt32 = 0x2, F_LUP: UInt32 = 0x4
     private let F_RDOWN: UInt32 = 0x8, F_RUP: UInt32 = 0x10
     private let F_WHEEL: UInt32 = 0x800, F_ABS: UInt32 = 0x8000
+
+        // ===================================================================
+    // Physical mouse capture (Bluetooth/USB mouse via GameController).
+    // While captured, GCMouse deltas feed the same relative-motion path
+    // the touch trackpad's relative mode already uses, and the system
+    // pointer is hidden over this view (UIPointerInteraction). Toggled
+    // by a UI button — iPad has no reliable hardware "release" shortcut.
+    // ===================================================================
+    private var mouseCaptureInstalled = false
+
+    private func setupMouseCapture() {
+        guard !mouseCaptureInstalled else { return }
+        mouseCaptureInstalled = true
+        self.addInteraction(UIPointerInteraction(delegate: self))
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleMouseConnect),
+            name: .GCMouseDidConnect, object: nil)
+        if let mouse = GCMouse.current { configureMouse(mouse) }
+    }
+
+    @objc private func handleMouseConnect(_ note: Notification) {
+        if let mouse = note.object as? GCMouse { configureMouse(mouse) }
+    }
+
+    private func configureMouse(_ mouse: GCMouse) {
+        guard let input = mouse.mouseInput else { return }
+        input.mouseMovedHandler = { [weak self] _, dx, dy in
+            guard let self, MouseCaptureState.shared.captured else { return }
+            DispatchQueue.main.async { self.applyMouseDelta(dx: CGFloat(dx), dy: CGFloat(dy)) }
+        }
+        input.leftButton.valueChangedHandler = { [weak self] _, _, pressed in
+            guard let self, MouseCaptureState.shared.captured else { return }
+            DispatchQueue.main.async { self.postPointer(pressed ? self.F_LDOWN : self.F_LUP) }
+        }
+        input.rightButton?.valueChangedHandler = { [weak self] _, _, pressed in
+            guard let self, MouseCaptureState.shared.captured else { return }
+            DispatchQueue.main.async { self.postPointer(pressed ? self.F_RDOWN : self.F_RUP) }
+        }
+        input.scroll.valueChangedHandler = { [weak self] _, _, dy in
+            guard let self, MouseCaptureState.shared.captured else { return }
+            DispatchQueue.main.async { self.applyMouseScroll(dy: CGFloat(dy)) }
+        }
+    }
+
+    // Same carry-accumulator math as touchesMoved's relative-touch branch,
+    // fed by GCMouse's own device-relative deltas instead of a finger drag.
+    // ⚠️ UNTESTED: GCMouse's dy sign convention vs. touch's is a guess —
+    // if the guest cursor moves vertically inverted, flip this minus sign.
+    private func applyMouseDelta(dx: CGFloat, dy: CGFloat) {
+        let sens = CGFloat(InputSettings.shared.sensRel)
+        relCarryX += dx * sens
+        relCarryY += -dy * sens
+        let ix = Int32(max(-30000, min(30000, relCarryX)))
+        let iy = Int32(max(-30000, min(30000, relCarryY)))
+        relCarryX -= CGFloat(ix)
+        relCarryY -= CGFloat(iy)
+        if ix != 0 || iy != 0 { winios_pointer(ix, iy, F_MOVE, 0) }
+    }
+
+    // ⚠️ UNTESTED: scale/sign here is a starting guess — tune against the
+    // two-finger touch scroll in touchesMoved once a mouse is connected.
+    private func applyMouseScroll(dy: CGFloat) {
+        scrollAccum += -dy
+        while scrollAccum <= -14 { scrollAccum += 14; postPointer(F_WHEEL, data: -120) }
+        while scrollAccum >= 14 { scrollAccum -= 14; postPointer(F_WHEEL, data: 120) }
+    }
 
     private var desktopMode: Bool {
         guard let v = getenv("MADEIRA_DESKTOP") else { return false }
@@ -782,6 +850,12 @@ extension MetalBackedView: UIKeyInput {
     var spellCheckingType: UITextSpellCheckingType { get { .no } set {} }
 }
 
+extension MetalBackedView: UIPointerInteractionDelegate {
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        MouseCaptureState.shared.captured ? .hidden() : nil
+    }
+}
+
 /// Pointer settings, persisted to the app container.
 ///
 /// ml641. Two independent sensitivities, because the two modes mean different
@@ -836,6 +910,14 @@ final class InputSettings: ObservableObject {
         try? d.write(to: Self.url, options: .atomic)
     }
 }
+/// Whether a physical mouse is currently driving the guest pointer
+/// (Amethyst/Parallels-style capture). While true, GCMouse deltas are
+/// routed through the same winios_pointer path relative-mode touch
+/// already uses, and the system pointer is hidden over the game view.
+final class MouseCaptureState: ObservableObject {
+    static let shared = MouseCaptureState()
+    @Published var captured = false
+}
 
 struct MadeiraMetalView: UIViewRepresentable {
     func makeUIView(context: Context) -> MetalBackedView {
@@ -850,6 +932,7 @@ struct ContentView: View {
     @State private var entitlements: EntitlementStatus?
     @State private var debuggerAttached = isDebuggerAttached()
     @ObservedObject private var input = InputSettings.shared
+    @ObservedObject private var mouseCapture = MouseCaptureState.shared
     @State private var pointerPanel = false
     @Namespace private var pointerNS
     /// .compact = iPhone landscape: game surface expands, arrow keys appear.
@@ -946,6 +1029,7 @@ struct ContentView: View {
                     }
                     .transition(.opacity)
                     pointerToggleButton
+                    mouseCaptureButton
                     diagToggleButton
                     Spacer()
                 }
@@ -1013,6 +1097,21 @@ struct ContentView: View {
                 .cornerRadius(6)
         }
         .matchedGeometryEffect(id: "pointerBtn", in: pointerNS)
+    }
+    
+        private var mouseCaptureButton: some View {
+        Button {
+            mouseCapture.captured.toggle()
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        } label: {
+            Image(systemName: mouseCapture.captured ? "cursorarrow.slash" : "computermouse")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(.white.opacity(mouseCapture.captured ? 1.0 : 0.6))
+                .frame(minWidth: 40, minHeight: 32)
+                .background((mouseCapture.captured ? Color.accentColor : Color.secondary).opacity(0.25))
+                .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
     }
 
     /// ml649: heavy diagnostics on/off, live. Stroke icon, dimmed when quiet —
