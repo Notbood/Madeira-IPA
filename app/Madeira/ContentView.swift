@@ -1000,7 +1000,7 @@ struct ContentView: View {
             .padding(.horizontal, 8)
             .padding(.bottom, 4)
             MadeiraMetalView()
-                .frame(height: 240)
+                .frame(height: UIScreen.main.bounds.height * 0.55)
                 .background(Color.black)
                 .onAppear { TouchControlsHost.attach() }
                 .onReceive(NotificationCenter.default.publisher(
@@ -1525,7 +1525,7 @@ struct ContentView: View {
                     // Known risk: if shellwindows_init beats services.exe's
                     // RPC_Init, OpenSCManager fails → watch whether that
                     // fails fast or hits the RaiseException→CS wedge again.
-                    let deskW = 960, deskH = 540
+                    let deskW = 1280, deskH = 720
                     setenv("MADEIRA_EXE", "explorer.exe", 1)
                     setenv("MADEIRA_ARGS",
                            "/desktop=shell,\(deskW)x\(deskH) C:\\windows\\system32\\services.exe", 1)
