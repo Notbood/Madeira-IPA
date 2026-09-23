@@ -233,6 +233,7 @@ final class MetalBackedView: UIView {
     private func setupMouseCapture() {
         guard !mouseCaptureInstalled else { return }
         mouseCaptureInstalled = true
+        PointerLockSwizzle.installOnce
         self.addInteraction(UIPointerInteraction(delegate: self))
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleMouseConnect),
@@ -956,6 +957,48 @@ struct PointerLockHost: UIViewControllerRepresentable {
     }
 }
 
+import ObjectiveC   // for the one-time swizzle below
+
+extension UIViewController {
+    /// Recursively find PointerLockViewController wherever SwiftUI actually
+    /// embedded it via PointerLockHost — could be several layers deep.
+    fileprivate func madeira_findPointerLockChild() -> UIViewController? {
+        if let match = children.first(where: { $0 is PointerLockViewController }) { return match }
+        for child in children {
+            if let found = child.madeira_findPointerLockChild() { return found }
+        }
+        return nil
+    }
+}
+
+/// SwiftUI's own root UIHostingController is the VC the system actually
+/// asks about pointer lock — PointerLockViewController, however correctly
+/// it's embedded via PointerLockHost, is never consulted on its own unless
+/// something overrides childViewControllerForPointerLock on that root
+/// controller to point down at it. This one-time swizzle does exactly that.
+enum PointerLockSwizzle {
+    static let installOnce: Void = {
+        guard
+            let original = class_getInstanceMethod(
+                UIHostingController<ContentView>.self,
+                #selector(getter: UIViewController.childViewControllerForPointerLock)),
+            let replacement = class_getInstanceMethod(
+                UIHostingController<ContentView>.self,
+                #selector(UIHostingController<ContentView>.madeira_childViewControllerForPointerLock))
+        else {
+            LogStore.shared.log("[mouse] pointer-lock swizzle FAILED to install", level: .error)
+            return
+        }
+        method_exchangeImplementations(original, replacement)
+        LogStore.shared.log("[mouse] pointer-lock swizzle installed", level: .success)
+    }()
+}
+
+extension UIHostingController where Content == ContentView {
+    @objc fileprivate func madeira_childViewControllerForPointerLock() -> UIViewController? {
+        madeira_findPointerLockChild()
+    }
+}
 struct MadeiraMetalView: UIViewRepresentable {
     func makeUIView(context: Context) -> MetalBackedView {
         return MetalBackedView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
