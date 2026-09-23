@@ -247,7 +247,9 @@ final class MetalBackedView: UIView {
     private func configureMouse(_ mouse: GCMouse) {
         guard let input = mouse.mouseInput else { return }
         input.mouseMovedHandler = { [weak self] _, dx, dy in
+            LogStore.shared.log("[mouse] mouseMovedHandler fired", level: .debug)
             guard let self, MouseCaptureState.shared.captured else { return }
+            LogStore.shared.log("[mouse] applying delta (captured)", level: .debug)
             DispatchQueue.main.async { self.applyMouseDelta(dx: CGFloat(dx), dy: CGFloat(dy)) }
         }
         input.leftButton.valueChangedHandler = { [weak self] _, _, pressed in
@@ -268,15 +270,31 @@ final class MetalBackedView: UIView {
     // fed by GCMouse's own device-relative deltas instead of a finger drag.
     // ⚠️ UNTESTED: GCMouse's dy sign convention vs. touch's is a guess —
     // if the guest cursor moves vertically inverted, flip this minus sign.
+    // Mirrors touchesMoved's own Absolute/Relative branching, so a physical
+    // mouse behaves exactly like a touch drag in whichever mode is active.
+    // Absolute (the default) is what a normal Wine desktop wants: it moves
+    // the SAME Self.cursor a trackpad drag uses, so the visible arrow moves
+    // and clicks (which read Self.cursor) land in the right place.
+    // ⚠️ UNTESTED: dy sign is a guess in both branches — flip the sign on
+    // dy below if the guest cursor moves vertically inverted.
     private func applyMouseDelta(dx: CGFloat, dy: CGFloat) {
-        let sens = CGFloat(InputSettings.shared.sensRel)
-        relCarryX += dx * sens
-        relCarryY += -dy * sens
-        let ix = Int32(max(-30000, min(30000, relCarryX)))
-        let iy = Int32(max(-30000, min(30000, relCarryY)))
-        relCarryX -= CGFloat(ix)
-        relCarryY -= CGFloat(iy)
-        if ix != 0 || iy != 0 { winios_pointer(ix, iy, F_MOVE, 0) }
+        if InputSettings.shared.relative {
+            let sens = CGFloat(InputSettings.shared.sensRel)
+            relCarryX += dx * sens
+            relCarryY += -dy * sens
+            let ix = Int32(max(-30000, min(30000, relCarryX)))
+            let iy = Int32(max(-30000, min(30000, relCarryY)))
+            relCarryX -= CGFloat(ix)
+            relCarryY -= CGFloat(iy)
+            if ix != 0 || iy != 0 { winios_pointer(ix, iy, F_MOVE, 0) }
+        } else {
+            let sens = CGFloat(InputSettings.shared.sensAbs)
+            let maxX = CGFloat(envInt("MADEIRA_SCREEN_W", 1024) - 1)
+            let maxY = CGFloat(envInt("MADEIRA_SCREEN_H", 768) - 1)
+            Self.cursor.x = min(max(Self.cursor.x + dx * sens, 0), maxX)
+            Self.cursor.y = min(max(Self.cursor.y - dy * sens, 0), maxY)
+            postPointer(F_MOVE | F_ABS)
+        }
     }
 
     // ⚠️ UNTESTED: scale/sign here is a starting guess — tune against the
@@ -919,6 +937,25 @@ final class MouseCaptureState: ObservableObject {
     @Published var captured = false
 }
 
+/// The real Apple API for this: hides the pointer AND disables the edge
+/// system gestures (Dock, Control Center, Notification Center) that were
+/// stealing focus once the invisible pointer drifted off the game box —
+/// see WWDC20 "Bring keyboard and mouse gaming to iPad". Only overridable
+/// on a genuine UIViewController, which SwiftUI doesn't expose directly,
+/// so it's wrapped as a representable and dropped into the view tree.
+final class PointerLockViewController: UIViewController {
+    override var prefersPointerLocked: Bool { MouseCaptureState.shared.captured }
+}
+
+struct PointerLockHost: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> PointerLockViewController {
+        PointerLockViewController()
+    }
+    func updateUIViewController(_ vc: PointerLockViewController, context: Context) {
+        vc.setNeedsUpdateOfPrefersPointerLocked()
+    }
+}
+
 struct MadeiraMetalView: UIViewRepresentable {
     func makeUIView(context: Context) -> MetalBackedView {
         return MetalBackedView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
@@ -1044,6 +1081,7 @@ struct ContentView: View {
             Divider()
             logConsole
         }
+        .background(PointerLockHost())
     }
 
     /// Landscape: game mode. Full-height 4:3 surface centered (aspect-fit
