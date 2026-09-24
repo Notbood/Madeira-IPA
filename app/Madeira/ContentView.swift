@@ -3,7 +3,6 @@ import UIKit
 import QuartzCore
 import Metal
 import os.log
-import GameController
 
 // 2026-07-03 window-hosted Metal layer.
 //
@@ -172,7 +171,6 @@ final class MetalBackedView: UIView {
             let full = convert(bounds, to: w)
             winios_set_compositor_frame(full.minX, full.minY, full.width, full.height)
         }
-        setupMouseCapture()
     }
 
     // Map touch point in view-local UI points to the 1024×768 logical
@@ -220,118 +218,6 @@ final class MetalBackedView: UIView {
     private let F_MOVE: UInt32 = 0x1, F_LDOWN: UInt32 = 0x2, F_LUP: UInt32 = 0x4
     private let F_RDOWN: UInt32 = 0x8, F_RUP: UInt32 = 0x10
     private let F_WHEEL: UInt32 = 0x800, F_ABS: UInt32 = 0x8000
-
-    // ===================================================================
-    // Physical mouse capture (Bluetooth/USB mouse via GameController).
-    // While captured, GCMouse deltas feed the same relative-motion path
-    // the touch trackpad's relative mode already uses, and the system
-    // pointer is hidden over this view (UIPointerInteraction). Toggled
-    // by a UI button — iPad has no reliable hardware "release" shortcut.
-    // ===================================================================
-    private var mouseCaptureInstalled = false
-
-    private func setupMouseCapture() {
-        guard !mouseCaptureInstalled else { return }
-        mouseCaptureInstalled = true
-        PointerLockSwizzle.installOnce
-        self.addInteraction(UIPointerInteraction(delegate: self))
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleMouseConnect),
-            name: .GCMouseDidConnect, object: nil)
-        if let mouse = GCMouse.current { configureMouse(mouse) }
-    }
-
-    @objc private func handleMouseConnect(_ note: Notification) {
-        if let mouse = note.object as? GCMouse { configureMouse(mouse) }
-    }
-
-	private func configureMouse(_ mouse: GCMouse) {
-		guard let input = mouse.mouseInput else { return }
-
-		input.mouseMovedHandler = { [weak self] _, dx, dy in
-			LogStore.shared.log("[mouse] mouseMovedHandler fired", level: .debug)
-			guard let self, MouseCaptureState.shared.captured else { return }
-
-			LogStore.shared.log("[mouse] applying delta (captured)", level: .debug)
-			DispatchQueue.main.async {
-				self.applyMouseDelta(dx: CGFloat(dx), dy: CGFloat(dy))
-			}
-		}
-
-		input.leftButton.valueChangedHandler = { [weak self] _, _, pressed in
-			guard let self else { return }
-
-			DispatchQueue.main.async {
-				if pressed {
-					// First physical click captures the mouse.
-					if !MouseCaptureState.shared.captured {
-						MouseCaptureState.shared.captured = true
-						UIImpactFeedbackGenerator(style: .light).impactOccurred()
-						LogStore.shared.log("[mouse] capture requested by left click", level: .debug)
-						return
-					}
-
-					self.postPointer(self.F_LDOWN)
-				} else {
-					guard MouseCaptureState.shared.captured else { return }
-					self.postPointer(self.F_LUP)
-				}
-			}
-		}
-
-		input.rightButton?.valueChangedHandler = { [weak self] _, _, pressed in
-			guard let self, MouseCaptureState.shared.captured else { return }
-			DispatchQueue.main.async {
-				self.postPointer(pressed ? self.F_RDOWN : self.F_RUP)
-			}
-		}
-
-		input.scroll.valueChangedHandler = { [weak self] _, _, dy in
-			guard let self, MouseCaptureState.shared.captured else { return }
-			DispatchQueue.main.async {
-				self.applyMouseScroll(dy: CGFloat(dy))
-			}
-		}
-	}
-
-    // Same carry-accumulator math as touchesMoved's relative-touch branch,
-    // fed by GCMouse's own device-relative deltas instead of a finger drag.
-    // ⚠️ UNTESTED: GCMouse's dy sign convention vs. touch's is a guess —
-    // if the guest cursor moves vertically inverted, flip this minus sign.
-    // Mirrors touchesMoved's own Absolute/Relative branching, so a physical
-    // mouse behaves exactly like a touch drag in whichever mode is active.
-    // Absolute (the default) is what a normal Wine desktop wants: it moves
-    // the SAME Self.cursor a trackpad drag uses, so the visible arrow moves
-    // and clicks (which read Self.cursor) land in the right place.
-    // ⚠️ UNTESTED: dy sign is a guess in both branches — flip the sign on
-    // dy below if the guest cursor moves vertically inverted.
-    private func applyMouseDelta(dx: CGFloat, dy: CGFloat) {
-        if InputSettings.shared.relative {
-            let sens = CGFloat(InputSettings.shared.sensRel)
-            relCarryX += dx * sens
-            relCarryY += -dy * sens
-            let ix = Int32(max(-30000, min(30000, relCarryX)))
-            let iy = Int32(max(-30000, min(30000, relCarryY)))
-            relCarryX -= CGFloat(ix)
-            relCarryY -= CGFloat(iy)
-            if ix != 0 || iy != 0 { winios_pointer(ix, iy, F_MOVE, 0) }
-        } else {
-            let sens = CGFloat(InputSettings.shared.sensAbs)
-            let maxX = CGFloat(envInt("MADEIRA_SCREEN_W", 1024) - 1)
-            let maxY = CGFloat(envInt("MADEIRA_SCREEN_H", 768) - 1)
-            Self.cursor.x = min(max(Self.cursor.x + dx * sens, 0), maxX)
-            Self.cursor.y = min(max(Self.cursor.y - dy * sens, 0), maxY)
-            postPointer(F_MOVE | F_ABS)
-        }
-    }
-
-    // ⚠️ UNTESTED: scale/sign here is a starting guess — tune against the
-    // two-finger touch scroll in touchesMoved once a mouse is connected.
-    private func applyMouseScroll(dy: CGFloat) {
-        scrollAccum += -dy
-        while scrollAccum <= -14 { scrollAccum += 14; postPointer(F_WHEEL, data: -120) }
-        while scrollAccum >= 14 { scrollAccum -= 14; postPointer(F_WHEEL, data: 120) }
-    }
 
     private var desktopMode: Bool {
         guard let v = getenv("MADEIRA_DESKTOP") else { return false }
@@ -896,12 +782,6 @@ extension MetalBackedView: UIKeyInput {
     var spellCheckingType: UITextSpellCheckingType { get { .no } set {} }
 }
 
-extension MetalBackedView: UIPointerInteractionDelegate {
-    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
-        MouseCaptureState.shared.captured ? .hidden() : nil
-    }
-}
-
 /// Pointer settings, persisted to the app container.
 ///
 /// ml641. Two independent sensitivities, because the two modes mean different
@@ -956,104 +836,7 @@ final class InputSettings: ObservableObject {
         try? d.write(to: Self.url, options: .atomic)
     }
 }
-/// Whether a physical mouse is currently driving the guest pointer
-/// (Amethyst/Parallels-style capture). While true, GCMouse deltas are
-/// routed through the same winios_pointer path relative-mode touch
-/// already uses, and the system pointer is hidden over the game view.
-final class MouseCaptureState: ObservableObject {
-    static let shared = MouseCaptureState()
-    @Published var captured = false
-}
 
-/// The real Apple API for this: hides the pointer AND disables the edge
-/// system gestures (Dock, Control Center, Notification Center) that were
-/// stealing focus once the invisible pointer drifted off the game box —
-/// see WWDC20 "Bring keyboard and mouse gaming to iPad". Only overridable
-/// on a genuine UIViewController, which SwiftUI doesn't expose directly,
-/// so it's wrapped as a representable and dropped into the view tree.
-final class PointerLockViewController: UIViewController {
-    override var prefersPointerLocked: Bool { MouseCaptureState.shared.captured }
-}
-
-struct PointerLockHost: UIViewControllerRepresentable {
-    func makeUIViewController(context: Context) -> PointerLockViewController {
-        PointerLockViewController()
-    }
-    func updateUIViewController(_ vc: PointerLockViewController, context: Context) {
-        vc.setNeedsUpdateOfPrefersPointerLocked()
-    }
-}
-
-import ObjectiveC   // for the one-time swizzle below
-
-extension UIViewController {
-    /// Recursively find PointerLockViewController wherever SwiftUI actually
-    /// embedded it via PointerLockHost — could be several layers deep.
-    fileprivate func madeira_findPointerLockChild() -> UIViewController? {
-        if let match = children.first(where: { $0 is PointerLockViewController }) {
-            return match
-        }
-        for child in children {
-            if let found = child.madeira_findPointerLockChild() {
-                return found
-            }
-        }
-        return nil
-    }
-
-    /// Objective-C-visible replacement implementation for
-    /// childViewControllerForPointerLock.
-    ///
-    /// IMPORTANT: this must live on UIViewController itself (a non-generic
-    /// class), not on `extension UIHostingController where ...`, because
-    /// Swift forbids @objc members in constrained generic extensions.
-    @objc fileprivate func madeira_childViewControllerForPointerLock() -> UIViewController? {
-        madeira_findPointerLockChild()
-    }
-}
-
-/// SwiftUI's root UIHostingController is the VC the system actually asks
-/// about pointer lock. PointerLockViewController is embedded deeper in the
-/// SwiftUI hierarchy, so forward the root controller's
-/// childViewControllerForPointerLock query to it.
-///
-/// class_getInstanceMethod() searches superclasses as well, so the replacement
-/// method declared above on UIViewController can be used safely here.
-enum PointerLockSwizzle {
-    static let installOnce: Void = {
-        let hostingClass: AnyClass = UIHostingController<ContentView>.self
-
-        guard
-            let original = class_getInstanceMethod(
-                hostingClass,
-                #selector(getter: UIViewController.childViewControllerForPointerLock)
-            ),
-            let replacement = class_getInstanceMethod(
-                UIViewController.self,
-                #selector(UIViewController.madeira_childViewControllerForPointerLock)
-            )
-        else {
-            LogStore.shared.log(
-                "[mouse] pointer-lock swizzle FAILED to install",
-                level: .error
-            )
-            return
-        }
-
-        method_exchangeImplementations(original, replacement)
-
-        LogStore.shared.log(
-            "[mouse] pointer-lock swizzle installed",
-            level: .success
-        )
-    }()
-}
-
-extension UIHostingController where Content == ContentView {
-    @objc fileprivate func madeira_childViewControllerForPointerLock() -> UIViewController? {
-        madeira_findPointerLockChild()
-    }
-}
 struct MadeiraMetalView: UIViewRepresentable {
     func makeUIView(context: Context) -> MetalBackedView {
         return MetalBackedView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
@@ -1067,7 +850,6 @@ struct ContentView: View {
     @State private var entitlements: EntitlementStatus?
     @State private var debuggerAttached = isDebuggerAttached()
     @ObservedObject private var input = InputSettings.shared
-    @ObservedObject private var mouseCapture = MouseCaptureState.shared
     @State private var pointerPanel = false
     @Namespace private var pointerNS
     /// .compact = iPhone landscape: game surface expands, arrow keys appear.
@@ -1135,7 +917,7 @@ struct ContentView: View {
             .padding(.horizontal, 8)
             .padding(.bottom, 4)
             MadeiraMetalView()
-                .frame(height: UIScreen.main.bounds.height * 0.55)
+                .frame(height: 240)
                 .background(Color.black)
                 .onAppear { TouchControlsHost.attach() }
                 .onReceive(NotificationCenter.default.publisher(
@@ -1164,7 +946,6 @@ struct ContentView: View {
                     }
                     .transition(.opacity)
                     pointerToggleButton
-                    mouseCaptureButton
                     diagToggleButton
                     Spacer()
                 }
@@ -1179,7 +960,6 @@ struct ContentView: View {
             Divider()
             logConsole
         }
-        .background(PointerLockHost())
     }
 
     /// Landscape: game mode. Full-height 4:3 surface centered (aspect-fit
@@ -1233,21 +1013,6 @@ struct ContentView: View {
                 .cornerRadius(6)
         }
         .matchedGeometryEffect(id: "pointerBtn", in: pointerNS)
-    }
-    
-        private var mouseCaptureButton: some View {
-        Button {
-            mouseCapture.captured.toggle()
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        } label: {
-            Image(systemName: mouseCapture.captured ? "cursorarrow.slash" : "computermouse")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(.white.opacity(mouseCapture.captured ? 1.0 : 0.6))
-                .frame(minWidth: 40, minHeight: 32)
-                .background((mouseCapture.captured ? Color.accentColor : Color.secondary).opacity(0.25))
-                .cornerRadius(6)
-        }
-        .buttonStyle(.plain)
     }
 
     /// ml649: heavy diagnostics on/off, live. Stroke icon, dimmed when quiet —
@@ -1661,7 +1426,7 @@ struct ContentView: View {
                     // Known risk: if shellwindows_init beats services.exe's
                     // RPC_Init, OpenSCManager fails → watch whether that
                     // fails fast or hits the RaiseException→CS wedge again.
-                    let deskW = 1280, deskH = 720
+                    let deskW = 960, deskH = 540
                     setenv("MADEIRA_EXE", "explorer.exe", 1)
                     setenv("MADEIRA_ARGS",
                            "/desktop=shell,\(deskW)x\(deskH) C:\\windows\\system32\\services.exe", 1)
