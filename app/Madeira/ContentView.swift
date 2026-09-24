@@ -969,22 +969,31 @@ extension UIViewController {
         }
         return nil
     }
+
+    // Swizzled in for EVERY view controller (see PointerLockSwizzle below) —
+    // @objc is only legal here because UIViewController itself isn't
+    // generic; a `where Content == ContentView` extension can't carry @objc.
+    @objc fileprivate func madeira_childViewControllerForPointerLock() -> UIViewController? {
+        madeira_findPointerLockChild()
+    }
 }
 
-/// SwiftUI's own root UIHostingController is the VC the system actually
-/// asks about pointer lock — PointerLockViewController, however correctly
-/// it's embedded via PointerLockHost, is never consulted on its own unless
-/// something overrides childViewControllerForPointerLock on that root
-/// controller to point down at it. This one-time swizzle does exactly that.
+/// SwiftUI's own root view controller is whatever the system actually asks
+/// about pointer lock — PointerLockViewController, however correctly it's
+/// embedded via PointerLockHost, is never consulted on its own. Swizzling
+/// at the base UIViewController class (rather than naming SwiftUI's exact
+/// generic UIHostingController<ContentView> type) works no matter what the
+/// real root class turns out to be, as long as it doesn't already override
+/// this property itself — which UIHostingController doesn't.
 enum PointerLockSwizzle {
     static let installOnce: Void = {
         guard
             let original = class_getInstanceMethod(
-                UIHostingController<ContentView>.self,
+                UIViewController.self,
                 #selector(getter: UIViewController.childViewControllerForPointerLock)),
             let replacement = class_getInstanceMethod(
-                UIHostingController<ContentView>.self,
-                #selector(UIHostingController<ContentView>.madeira_childViewControllerForPointerLock))
+                UIViewController.self,
+                #selector(UIViewController.madeira_childViewControllerForPointerLock))
         else {
             LogStore.shared.log("[mouse] pointer-lock swizzle FAILED to install", level: .error)
             return
