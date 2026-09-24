@@ -221,7 +221,7 @@ final class MetalBackedView: UIView {
     private let F_RDOWN: UInt32 = 0x8, F_RUP: UInt32 = 0x10
     private let F_WHEEL: UInt32 = 0x800, F_ABS: UInt32 = 0x8000
 
-        // ===================================================================
+    // ===================================================================
     // Physical mouse capture (Bluetooth/USB mouse via GameController).
     // While captured, GCMouse deltas feed the same relative-motion path
     // the touch trackpad's relative mode already uses, and the system
@@ -245,27 +245,54 @@ final class MetalBackedView: UIView {
         if let mouse = note.object as? GCMouse { configureMouse(mouse) }
     }
 
-    private func configureMouse(_ mouse: GCMouse) {
-        guard let input = mouse.mouseInput else { return }
-        input.mouseMovedHandler = { [weak self] _, dx, dy in
-            LogStore.shared.log("[mouse] mouseMovedHandler fired", level: .debug)
-            guard let self, MouseCaptureState.shared.captured else { return }
-            LogStore.shared.log("[mouse] applying delta (captured)", level: .debug)
-            DispatchQueue.main.async { self.applyMouseDelta(dx: CGFloat(dx), dy: CGFloat(dy)) }
-        }
-        input.leftButton.valueChangedHandler = { [weak self] _, _, pressed in
-            guard let self, MouseCaptureState.shared.captured else { return }
-            DispatchQueue.main.async { self.postPointer(pressed ? self.F_LDOWN : self.F_LUP) }
-        }
-        input.rightButton?.valueChangedHandler = { [weak self] _, _, pressed in
-            guard let self, MouseCaptureState.shared.captured else { return }
-            DispatchQueue.main.async { self.postPointer(pressed ? self.F_RDOWN : self.F_RUP) }
-        }
-        input.scroll.valueChangedHandler = { [weak self] _, _, dy in
-            guard let self, MouseCaptureState.shared.captured else { return }
-            DispatchQueue.main.async { self.applyMouseScroll(dy: CGFloat(dy)) }
-        }
-    }
+	private func configureMouse(_ mouse: GCMouse) {
+		guard let input = mouse.mouseInput else { return }
+
+		input.mouseMovedHandler = { [weak self] _, dx, dy in
+			LogStore.shared.log("[mouse] mouseMovedHandler fired", level: .debug)
+			guard let self, MouseCaptureState.shared.captured else { return }
+
+			LogStore.shared.log("[mouse] applying delta (captured)", level: .debug)
+			DispatchQueue.main.async {
+				self.applyMouseDelta(dx: CGFloat(dx), dy: CGFloat(dy))
+			}
+		}
+
+		input.leftButton.valueChangedHandler = { [weak self] _, _, pressed in
+			guard let self else { return }
+
+			DispatchQueue.main.async {
+				if pressed {
+					// First physical click captures the mouse.
+					if !MouseCaptureState.shared.captured {
+						MouseCaptureState.shared.captured = true
+						UIImpactFeedbackGenerator(style: .light).impactOccurred()
+						LogStore.shared.log("[mouse] capture requested by left click", level: .debug)
+						return
+					}
+
+					self.postPointer(self.F_LDOWN)
+				} else {
+					guard MouseCaptureState.shared.captured else { return }
+					self.postPointer(self.F_LUP)
+				}
+			}
+		}
+
+		input.rightButton?.valueChangedHandler = { [weak self] _, _, pressed in
+			guard let self, MouseCaptureState.shared.captured else { return }
+			DispatchQueue.main.async {
+				self.postPointer(pressed ? self.F_RDOWN : self.F_RUP)
+			}
+		}
+
+		input.scroll.valueChangedHandler = { [weak self] _, _, dy in
+			guard let self, MouseCaptureState.shared.captured else { return }
+			DispatchQueue.main.async {
+				self.applyMouseScroll(dy: CGFloat(dy))
+			}
+		}
+	}
 
     // Same carry-accumulator math as touchesMoved's relative-touch branch,
     // fed by GCMouse's own device-relative deltas instead of a finger drag.
@@ -963,43 +990,62 @@ extension UIViewController {
     /// Recursively find PointerLockViewController wherever SwiftUI actually
     /// embedded it via PointerLockHost — could be several layers deep.
     fileprivate func madeira_findPointerLockChild() -> UIViewController? {
-        if let match = children.first(where: { $0 is PointerLockViewController }) { return match }
+        if let match = children.first(where: { $0 is PointerLockViewController }) {
+            return match
+        }
         for child in children {
-            if let found = child.madeira_findPointerLockChild() { return found }
+            if let found = child.madeira_findPointerLockChild() {
+                return found
+            }
         }
         return nil
     }
 
-    // Swizzled in for EVERY view controller (see PointerLockSwizzle below) —
-    // @objc is only legal here because UIViewController itself isn't
-    // generic; a `where Content == ContentView` extension can't carry @objc.
+    /// Objective-C-visible replacement implementation for
+    /// childViewControllerForPointerLock.
+    ///
+    /// IMPORTANT: this must live on UIViewController itself (a non-generic
+    /// class), not on `extension UIHostingController where ...`, because
+    /// Swift forbids @objc members in constrained generic extensions.
     @objc fileprivate func madeira_childViewControllerForPointerLock() -> UIViewController? {
         madeira_findPointerLockChild()
     }
 }
 
-/// SwiftUI's own root view controller is whatever the system actually asks
-/// about pointer lock — PointerLockViewController, however correctly it's
-/// embedded via PointerLockHost, is never consulted on its own. Swizzling
-/// at the base UIViewController class (rather than naming SwiftUI's exact
-/// generic UIHostingController<ContentView> type) works no matter what the
-/// real root class turns out to be, as long as it doesn't already override
-/// this property itself — which UIHostingController doesn't.
+/// SwiftUI's root UIHostingController is the VC the system actually asks
+/// about pointer lock. PointerLockViewController is embedded deeper in the
+/// SwiftUI hierarchy, so forward the root controller's
+/// childViewControllerForPointerLock query to it.
+///
+/// class_getInstanceMethod() searches superclasses as well, so the replacement
+/// method declared above on UIViewController can be used safely here.
 enum PointerLockSwizzle {
     static let installOnce: Void = {
+        let hostingClass: AnyClass = UIHostingController<ContentView>.self
+
         guard
             let original = class_getInstanceMethod(
-                UIViewController.self,
-                #selector(getter: UIViewController.childViewControllerForPointerLock)),
+                hostingClass,
+                #selector(getter: UIViewController.childViewControllerForPointerLock)
+            ),
             let replacement = class_getInstanceMethod(
                 UIViewController.self,
-                #selector(UIViewController.madeira_childViewControllerForPointerLock))
+                #selector(UIViewController.madeira_childViewControllerForPointerLock)
+            )
         else {
-            LogStore.shared.log("[mouse] pointer-lock swizzle FAILED to install", level: .error)
+            LogStore.shared.log(
+                "[mouse] pointer-lock swizzle FAILED to install",
+                level: .error
+            )
             return
         }
+
         method_exchangeImplementations(original, replacement)
-        LogStore.shared.log("[mouse] pointer-lock swizzle installed", level: .success)
+
+        LogStore.shared.log(
+            "[mouse] pointer-lock swizzle installed",
+            level: .success
+        )
     }()
 }
 
