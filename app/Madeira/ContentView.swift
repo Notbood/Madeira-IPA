@@ -915,10 +915,35 @@ struct ContentView: View {
 						TouchControlsHost.attach()   // re-frame to the new bounds
 					}
 				HStack(spacing: 6) {
-					// ...unchanged...
+					if pointerPanel {
+						// The cursor button has slid to the leftmost slot and become
+						// the close control; matchedGeometryEffect animates the slide.
+						pointerToggleButton
+						pointerModeToggle
+						pointerSensSlider
+					} else {
+						Group {
+							keyButton("⏎", vk: 0x0D)   // VK_RETURN
+							keyButton("␣", vk: 0x20)   // VK_SPACE
+							keyButton("Esc", vk: 0x1B) // VK_ESCAPE
+							Button { MetalBackedView.toggleKeyboard() } label: {
+								Text("⌨").font(.system(size: 20))
+									.frame(minWidth: 40, minHeight: 32)
+									.background(Color.secondary.opacity(0.25))
+									.cornerRadius(6)
+							}
+							JoystickKeyView()
+						}
+						.transition(.opacity)
+						pointerToggleButton
+						diagToggleButton
+						Spacer()
+					}
 				}
 				.padding(.horizontal, 8)
 				.padding(.vertical, 4)
+				// The expanded pad overflows this row; without a raised zIndex the
+				// later VStack siblings (action buttons, log) would draw over it.
 				.zIndex(10)
 				Divider()
 				actionButtons
