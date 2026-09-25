@@ -87,6 +87,31 @@ static size_t align_to_page(size_t size) {
     return (size + JIT_PAGE_SIZE - 1) & ~(JIT_PAGE_SIZE - 1);
 }
 
+#define GUEST_EXE_BASE   0x140000000ULL
+#define GUEST_EXE_WINDOW 0x40000000ULL   /* 1 GB */
+
+static vm_address_t g_guest_window = 0;
+
+bool jit_reserve_guest_window(void) {
+    vm_address_t a = (vm_address_t)GUEST_EXE_BASE;
+    kern_return_t kr = vm_allocate(mach_task_self(), &a, GUEST_EXE_WINDOW, VM_FLAGS_FIXED);
+    if (kr != KERN_SUCCESS) {
+        jit_log("[guest-window] reserve FAILED kr=%d (%s)", kr, mach_error_string(kr));
+        return false;
+    }
+    vm_protect(mach_task_self(), a, GUEST_EXE_WINDOW, FALSE, VM_PROT_NONE);
+    g_guest_window = a;
+    jit_log("[guest-window] reserved %p+0x%llx", (void *)a, GUEST_EXE_WINDOW);
+    return true;
+}
+
+void jit_release_guest_window(void) {
+    if (!g_guest_window) return;
+    vm_deallocate(mach_task_self(), g_guest_window, GUEST_EXE_WINDOW);
+    jit_log("[guest-window] released");
+    g_guest_window = 0;
+}
+
 JITRegion *jit_region_create(size_t size) {
     size = align_to_page(size);
 
