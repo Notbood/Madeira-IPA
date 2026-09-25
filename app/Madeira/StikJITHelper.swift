@@ -92,14 +92,6 @@ enum StikJITHelper {
         //
         // We keep these allocations alive for the lifetime of the process —
         // freeing them could let iOS reuse them and cause aliasing issues.
-    let exeBaseWindow: vm_size_t = 0x40000000
-    var exeBaseReserved: vm_address_t = 0x140000000
-    let exeReserveKr = vm_allocate(mach_task_self_, &exeBaseReserved, exeBaseWindow, VM_FLAGS_FIXED)
-    if exeReserveKr == KERN_SUCCESS {
-        LogStore.shared.log(String(format: "Reserved guest-exe window 0x%lx+0x%lx", 0x140000000, exeBaseWindow))
-    } else {
-        LogStore.shared.log("Guest-exe window reserve FAILED kr=\(exeReserveKr) (continuing anyway)", level: .error)
-    }
         var pinChunks: [vm_address_t] = []
         let chunkSize = 16 * 1024 * 1024  // 16 MB per chunk
         // Pin until the allocation frontier crosses the mode-A threshold
@@ -152,50 +144,26 @@ enum StikJITHelper {
         let goodLow = 0x119000000
         let guestLo = 0x7000000000
         let guestHi = 0x8000000000
-        let exeBaseLo = 0x140000000
-        let exeBaseHi = 0x180000000
         var rxPtrOpt: UnsafeMutableRawPointer? = nil
-        // Filler pins: plain vm_allocate(FIXED) in OUR OWN process — never
-        // sent to the debugger, so it can't crash the BRK protocol like a
-        // raw address hint to jit26_prepare_region did. Used only to plug
-        // the gap from a rejected address up to exeBaseHi, so the next
-        // ANYWHERE request is forced past the whole window in one hop.
-        var fillerPins: [(vm_address_t, vm_size_t)] = []
-        for attempt in 0..<8 {
+        for attempt in 0..<3 {
             guard let p = jit26_prepare_region(nil, poolSize), p != UnsafeMutableRawPointer(bitPattern: 0) else {
                 LogStore.shared.log("Debugger failed to allocate RX memory (attempt \(attempt))", level: .error)
                 break
             }
             let a = Int(bitPattern: p)
-            let combinedEnd = a + poolSize * 2
-            let inGuestWindow = combinedEnd > guestLo && a < guestHi
-            let inExeBaseWindow = combinedEnd > exeBaseLo && a < exeBaseHi
-            if a >= goodLow && !inGuestWindow && !inExeBaseWindow {
+            let inGuestWindow = a + poolSize > guestLo && a < guestHi
+            if a >= goodLow && !inGuestWindow {
                 rxPtrOpt = p
                 break
             }
-            let reason = a < goodLow ? "mode A low" : (inGuestWindow ? "guest 64G window" : "guest-exe base window")
             LogStore.shared.log(String(format: "BAD POOL placement 0x%lx (%@) — re-rolling (attempt %d)",
-                                       a, reason, attempt), level: .error)
+                                       a, a < goodLow ? "mode A low" : "guest 64G window",
+                                       attempt), level: .error)
             let dkr = vm_deallocate(mach_task_self_, vm_address_t(a), vm_size_t(poolSize))
-            if inExeBaseWindow, dkr == KERN_SUCCESS, a < exeBaseHi {
-                var fillAddr = vm_address_t(a)
-                let fillSize = vm_size_t(exeBaseHi - a)
-                let fkr = vm_allocate(mach_task_self_, &fillAddr, fillSize, VM_FLAGS_FIXED)
-                if fkr == KERN_SUCCESS {
-                    fillerPins.append((fillAddr, fillSize))
-                    LogStore.shared.log("  plugged gap up to exe-base window end")
-                } else {
-                    LogStore.shared.log("  gap-plug FAILED kr=\(fkr) (falling back to plain retry)", level: .error)
-                }
-            } else {
-                LogStore.shared.log(dkr == KERN_SUCCESS ? "  bad region freed" : "  bad region kept as pin (vm_deallocate kr=\(dkr))")
-            }
+            LogStore.shared.log(dkr == KERN_SUCCESS
+                ? "  bad region freed"
+                : "  bad region kept as pin (vm_deallocate kr=\(dkr))")
         }
-        for (addr, size) in fillerPins {
-            vm_deallocate(mach_task_self_, addr, size)
-        }
-
         guard let rxPtr = rxPtrOpt else {
             LogStore.shared.log("BAD POOL: no valid placement after retries. Killing in 10s — please relaunch.", level: .error)
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 10) {
@@ -298,7 +266,6 @@ enum StikJITHelper {
 
         guard kr1 == KERN_SUCCESS else {
             LogStore.shared.log("vm_remap failed: \(kr1)", level: .error)
-            if exeReserveKr == KERN_SUCCESS { vm_deallocate(mach_task_self_, exeBaseReserved, exeBaseWindow) }
             return nil
         }
 
@@ -307,16 +274,11 @@ enum StikJITHelper {
         guard kr2 == KERN_SUCCESS else {
             LogStore.shared.log("vm_protect(RW) failed: \(kr2)", level: .error)
             vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
-            if exeReserveKr == KERN_SUCCESS { vm_deallocate(mach_task_self_, exeBaseReserved, exeBaseWindow) }
             return nil
         }
 
         let rwPtr = UnsafeMutableRawPointer(bitPattern: rwAddr)!
         LogStore.shared.log("RW mapping at \(String(format: "%p", Int(bitPattern: rwPtr)))")
-        if exeReserveKr == KERN_SUCCESS {
-            vm_deallocate(mach_task_self_, exeBaseReserved, exeBaseWindow)
-            LogStore.shared.log("Released guest-exe window reservation")
-        }
 
         // ml358: the pool has NEVER been jetsam-exempt. jit_region_create()
         // applies NO_FOOTPRINT, but this path takes its RX pages from the
