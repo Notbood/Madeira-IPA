@@ -155,13 +155,14 @@ enum StikJITHelper {
         let exeBaseLo = 0x140000000
         let exeBaseHi = 0x180000000
         var rxPtrOpt: UnsafeMutableRawPointer? = nil
-        // Attempt 0 gets an explicit hint well past the exe-base window and
-        // far below the 64G guest window, so it lands safely in one shot
-        // instead of marching toward either forbidden zone step by step.
-        let hintAddr = UnsafeMutableRawPointer(bitPattern: 0x1A0000000)
+        // Filler pins: plain vm_allocate(FIXED) in OUR OWN process — never
+        // sent to the debugger, so it can't crash the BRK protocol like a
+        // raw address hint to jit26_prepare_region did. Used only to plug
+        // the gap from a rejected address up to exeBaseHi, so the next
+        // ANYWHERE request is forced past the whole window in one hop.
+        var fillerPins: [(vm_address_t, vm_size_t)] = []
         for attempt in 0..<8 {
-            let requestAddr = attempt == 0 ? hintAddr : nil
-            guard let p = jit26_prepare_region(requestAddr, poolSize), p != UnsafeMutableRawPointer(bitPattern: 0) else {
+            guard let p = jit26_prepare_region(nil, poolSize), p != UnsafeMutableRawPointer(bitPattern: 0) else {
                 LogStore.shared.log("Debugger failed to allocate RX memory (attempt \(attempt))", level: .error)
                 break
             }
@@ -177,9 +178,22 @@ enum StikJITHelper {
             LogStore.shared.log(String(format: "BAD POOL placement 0x%lx (%@) — re-rolling (attempt %d)",
                                        a, reason, attempt), level: .error)
             let dkr = vm_deallocate(mach_task_self_, vm_address_t(a), vm_size_t(poolSize))
-            LogStore.shared.log(dkr == KERN_SUCCESS
-                ? "  bad region freed"
-                : "  bad region kept as pin (vm_deallocate kr=\(dkr))")
+            if inExeBaseWindow, dkr == KERN_SUCCESS, a < exeBaseHi {
+                var fillAddr = vm_address_t(a)
+                let fillSize = vm_size_t(exeBaseHi - a)
+                let fkr = vm_allocate(mach_task_self_, &fillAddr, fillSize, VM_FLAGS_FIXED)
+                if fkr == KERN_SUCCESS {
+                    fillerPins.append((fillAddr, fillSize))
+                    LogStore.shared.log("  plugged gap up to exe-base window end")
+                } else {
+                    LogStore.shared.log("  gap-plug FAILED kr=\(fkr) (falling back to plain retry)", level: .error)
+                }
+            } else {
+                LogStore.shared.log(dkr == KERN_SUCCESS ? "  bad region freed" : "  bad region kept as pin (vm_deallocate kr=\(dkr))")
+            }
+        }
+        for (addr, size) in fillerPins {
+            vm_deallocate(mach_task_self_, addr, size)
         }
 
         guard let rxPtr = rxPtrOpt else {
