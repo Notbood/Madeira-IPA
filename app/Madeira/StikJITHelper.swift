@@ -155,20 +155,17 @@ enum StikJITHelper {
         let exeBaseLo = 0x140000000
         let exeBaseHi = 0x180000000
         var rxPtrOpt: UnsafeMutableRawPointer? = nil
-        // Regions we reject: kept MAPPED (not freed) so the next ANYWHERE
-        // request is forced past them. Freeing and re-requesting tends to
-        // hand back the exact same hole (see ml596's note above) — nothing
-        // else changes the free list in between, so it isn't a real re-roll.
-        var badPins: [(vm_address_t, Int)] = []
+        // Attempt 0 gets an explicit hint well past the exe-base window and
+        // far below the 64G guest window, so it lands safely in one shot
+        // instead of marching toward either forbidden zone step by step.
+        let hintAddr = UnsafeMutableRawPointer(bitPattern: 0x1A0000000)
         for attempt in 0..<8 {
-            guard let p = jit26_prepare_region(nil, poolSize), p != UnsafeMutableRawPointer(bitPattern: 0) else {
+            let requestAddr = attempt == 0 ? hintAddr : nil
+            guard let p = jit26_prepare_region(requestAddr, poolSize), p != UnsafeMutableRawPointer(bitPattern: 0) else {
                 LogStore.shared.log("Debugger failed to allocate RX memory (attempt \(attempt))", level: .error)
                 break
             }
             let a = Int(bitPattern: p)
-            // vm_remap(ANYWHERE) has consistently placed the RW alias right
-            // after RX (offset == poolSize) in every observed log, so check
-            // the COMBINED footprint, not just RX alone.
             let combinedEnd = a + poolSize * 2
             let inGuestWindow = combinedEnd > guestLo && a < guestHi
             let inExeBaseWindow = combinedEnd > exeBaseLo && a < exeBaseHi
@@ -179,12 +176,10 @@ enum StikJITHelper {
             let reason = a < goodLow ? "mode A low" : (inGuestWindow ? "guest 64G window" : "guest-exe base window")
             LogStore.shared.log(String(format: "BAD POOL placement 0x%lx (%@) — re-rolling (attempt %d)",
                                        a, reason, attempt), level: .error)
-            badPins.append((vm_address_t(a), poolSize))
-        }
-        // Now that placement is settled (or attempts are exhausted), release
-        // the walls — they were only needed to steer allocation during the loop.
-        for (addr, size) in badPins {
-            vm_deallocate(mach_task_self_, addr, vm_size_t(size))
+            let dkr = vm_deallocate(mach_task_self_, vm_address_t(a), vm_size_t(poolSize))
+            LogStore.shared.log(dkr == KERN_SUCCESS
+                ? "  bad region freed"
+                : "  bad region kept as pin (vm_deallocate kr=\(dkr))")
         }
 
         guard let rxPtr = rxPtrOpt else {
