@@ -92,6 +92,15 @@ enum StikJITHelper {
         //
         // We keep these allocations alive for the lifetime of the process —
         // freeing them could let iOS reuse them and cause aliasing issues.
+        let exeBaseLo: vm_address_t = 0x140000000
+        let exeBaseWindow: vm_size_t = 0x40000000
+        var exeBaseReserved: vm_address_t = exeBaseLo
+        let exeReserveKr = vm_allocate(mach_task_self_, &exeBaseReserved, exeBaseWindow, VM_FLAGS_FIXED)
+        if exeReserveKr == KERN_SUCCESS {
+            LogStore.shared.log(String(format: "Reserved guest-exe window 0x%lx+0x%lx", exeBaseLo, exeBaseWindow))
+        } else {
+            LogStore.shared.log("Guest-exe window reserve FAILED kr=\(exeReserveKr) (continuing anyway)", level: .error)
+        }
         var pinChunks: [vm_address_t] = []
         let chunkSize = 16 * 1024 * 1024  // 16 MB per chunk
         // Pin until the allocation frontier crosses the mode-A threshold
@@ -152,7 +161,8 @@ enum StikJITHelper {
             }
             let a = Int(bitPattern: p)
             let inGuestWindow = a + poolSize > guestLo && a < guestHi
-            if a >= goodLow && !inGuestWindow {
+            let inExeBaseWindow = a + poolSize > Int(exeBaseLo) && a < Int(exeBaseLo) + Int(exeBaseWindow)
+            if a >= goodLow && !inGuestWindow && !inExeBaseWindow {
                 rxPtrOpt = p
                 break
             }
@@ -266,6 +276,7 @@ enum StikJITHelper {
 
         guard kr1 == KERN_SUCCESS else {
             LogStore.shared.log("vm_remap failed: \(kr1)", level: .error)
+            if exeReserveKr == KERN_SUCCESS { vm_deallocate(mach_task_self_, exeBaseReserved, exeBaseWindow) }
             return nil
         }
 
@@ -274,11 +285,16 @@ enum StikJITHelper {
         guard kr2 == KERN_SUCCESS else {
             LogStore.shared.log("vm_protect(RW) failed: \(kr2)", level: .error)
             vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
+            if exeReserveKr == KERN_SUCCESS { vm_deallocate(mach_task_self_, exeBaseReserved, exeBaseWindow) }
             return nil
         }
 
         let rwPtr = UnsafeMutableRawPointer(bitPattern: rwAddr)!
         LogStore.shared.log("RW mapping at \(String(format: "%p", Int(bitPattern: rwPtr)))")
+        if exeReserveKr == KERN_SUCCESS {
+            vm_deallocate(mach_task_self_, exeBaseReserved, exeBaseWindow)
+            LogStore.shared.log("Released guest-exe window reservation")
+        }
 
         // ml358: the pool has NEVER been jetsam-exempt. jit_region_create()
         // applies NO_FOOTPRINT, but this path takes its RX pages from the
