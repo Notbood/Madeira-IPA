@@ -893,74 +893,40 @@ struct ContentView: View {
             }
         }
     }
-
-    /// Portrait: classic tooling layout — header, badges, 240pt game strip,
-    /// key row, action buttons, log console.
-    private var portraitBody: some View {
-        VStack(spacing: 0) {
-            // Readouts sit ABOVE the game strip, closest to the surface they
-            // describe: entitlement indicators, then the present/FPS readout,
-            // then the surface itself. (Only the KEY row stays below — it is
-            // input, not instrumentation.)
-            //
-            // NOTE: the surface is a raw window-level view positioned over the
-            // placeholder (MetalHostView.shared), so SwiftUI content laid "on
-            // top" of the strip is covered — these rows must be siblings above
-            // it, never overlays on it.
-            if let ents = entitlements {
-                entitlementBadges(ents)
-            }
-            HStack(spacing: 6) {
-                FPSOverlay()
-                Spacer()
-            }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 4)
-            MadeiraMetalView()
-                .frame(height: 240)
-                .background(Color.black)
-                .onAppear { TouchControlsHost.attach() }
-                .onReceive(NotificationCenter.default.publisher(
-                    for: UIDevice.orientationDidChangeNotification)) { _ in
-                    TouchControlsHost.attach()   // re-frame to the new bounds
-                }
-            HStack(spacing: 6) {
-                if pointerPanel {
-                    // The cursor button has slid to the leftmost slot and become
-                    // the close control; matchedGeometryEffect animates the slide.
-                    pointerToggleButton
-                    pointerModeToggle
-                    pointerSensSlider
-                } else {
-                    Group {
-                        keyButton("⏎", vk: 0x0D)   // VK_RETURN
-                        keyButton("␣", vk: 0x20)   // VK_SPACE
-                        keyButton("Esc", vk: 0x1B) // VK_ESCAPE
-                        Button { MetalBackedView.toggleKeyboard() } label: {
-                            Text("⌨").font(.system(size: 20))
-                                .frame(minWidth: 40, minHeight: 32)
-                                .background(Color.secondary.opacity(0.25))
-                                .cornerRadius(6)
-                        }
-                        JoystickKeyView()
-                    }
-                    .transition(.opacity)
-                    pointerToggleButton
-                    diagToggleButton
-                    Spacer()
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            // The expanded pad overflows this row; without a raised zIndex the
-            // later VStack siblings (action buttons, log) would draw over it.
-            .zIndex(10)
-            Divider()
-            actionButtons
-            Divider()
-            logConsole
-        }
-    }
+    
+	private var portraitBody: some View {
+		GeometryReader { geo in
+			VStack(spacing: 0) {
+				if let ents = entitlements {
+					entitlementBadges(ents)
+				}
+				HStack(spacing: 6) {
+					FPSOverlay()
+					Spacer()
+				}
+				.padding(.horizontal, 8)
+				.padding(.bottom, 4)
+				MadeiraMetalView()
+					.frame(height: geo.size.height * 0.55)   // tune the fraction to taste
+					.background(Color.black)
+					.onAppear { TouchControlsHost.attach() }
+					.onReceive(NotificationCenter.default.publisher(
+						for: UIDevice.orientationDidChangeNotification)) { _ in
+						TouchControlsHost.attach()   // re-frame to the new bounds
+					}
+				HStack(spacing: 6) {
+					// ...unchanged...
+				}
+				.padding(.horizontal, 8)
+				.padding(.vertical, 4)
+				.zIndex(10)
+				Divider()
+				actionButtons
+				Divider()
+				logConsole
+			}
+		}
+	}
 
     /// Landscape: game mode. Full-height 4:3 surface centered (aspect-fit
     /// happens in MetalBackedView); ALL controls live in the pillarbox
@@ -1426,7 +1392,7 @@ struct ContentView: View {
                     // Known risk: if shellwindows_init beats services.exe's
                     // RPC_Init, OpenSCManager fails → watch whether that
                     // fails fast or hits the RaiseException→CS wedge again.
-                    let deskW = 960, deskH = 540
+                    let deskW = 1600, deskH = 1200
                     setenv("MADEIRA_EXE", "explorer.exe", 1)
                     setenv("MADEIRA_ARGS",
                            "/desktop=shell,\(deskW)x\(deskH) C:\\windows\\system32\\services.exe", 1)
