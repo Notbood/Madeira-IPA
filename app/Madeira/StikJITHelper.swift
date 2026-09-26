@@ -93,23 +93,29 @@ enum StikJITHelper {
         // We keep these allocations alive for the lifetime of the process —
         // freeing them could let iOS reuse them and cause aliasing issues.
         var pinChunks: [vm_address_t] = []
-        let chunkSize = 16 * 1024 * 1024  // 16 MB per chunk
-        // Pin until the allocation frontier crosses the mode-A threshold
-        // (0x119000000) instead of a fixed 96MB. A fixed count loses the
-        // ASLR lottery whenever the base slide is low (observed 2026-07-03:
-        // 6 chunks ended at 0x118790000, pool landed 8.4MB short of the
-        // threshold and the run fast-failed). vm_allocate is zero-fill
-        // reserve-only, so extra chunks don't add resident footprint.
-        // The BAD POOL check below stays as the safety net for non-
-        // sequential placements.
-        let pinTarget: vm_address_t = 0x119000000
-        let maxChunks = 32                 // safety cap (512 MB of reservation)
+        // ml_civ6: legacy non-ASLR 64-bit EXEs (common in DRM-stripped repacks —
+        // this Civ6 build included) are linked at the MSVC default ImageBase
+        // 0x140000000 with no relocation table: if that address isn't free when
+        // they load, Wine can't rebase them and the loader hard-fails with
+        // c0000018 (STATUS_CONFLICTING_ADDRESSES). Our pool landed directly on
+        // top of it (RW alias 0x137000000-0x14F000000 in the crash log —
+        // 0x140000000 sat exactly 0x9000000 inside that range). Push the floor
+        // past a [0x130000000, 0x180000000) keep-clear band around it so the
+        // pool — RX here, and the RW alias that lands right after it — never
+        // occupies that range, regardless of which title or launch path (virtual
+        // desktop, Steam, or a direct exe button) needs it. Bigger chunks and a
+        // higher cap so the climb reliably clears the new floor even on an
+        // unlucky ASLR slide; vm_allocate here is zero-fill reserve-only, so
+        // none of this costs resident memory — cheap even at a larger size.
+        let chunkSize = 64 * 1024 * 1024   // 64 MB per chunk
+        let pinTarget: vm_address_t = 0x180000000
+        let maxChunks = 96                 // safety cap (6 GB of reservation, all virtual)
         for i in 0..<maxChunks {
             var addr: vm_address_t = 0
             let kr = vm_allocate(mach_task_self_, &addr, vm_size_t(chunkSize), VM_FLAGS_ANYWHERE)
             if kr == KERN_SUCCESS {
                 pinChunks.append(addr)
-                LogStore.shared.log(String(format: "JIT-pool pin chunk %d at 0x%lx (16MB)", i, Int(addr)))
+                LogStore.shared.log(String(format: "JIT-pool pin chunk %d at 0x%lx (%dMB)", i, Int(addr), chunkSize / 1024 / 1024))
                 if addr + vm_address_t(chunkSize) >= pinTarget { break }
             } else {
                 LogStore.shared.log("JIT-pool pin chunk \(i) FAILED kr=\(kr)", level: .error)
