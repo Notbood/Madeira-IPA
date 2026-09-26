@@ -284,6 +284,42 @@ enum StikJITHelper {
             LogStore.shared.log("vm_remap failed: \(kr1)", level: .error)
             return nil
         }
+        // ml_civ6 v3: RX (jit26_prepare_region, above) already refuses the
+        // guest 64G window via the goodLow/guestLo/guestHi retry loop — RW's
+        // vm_remap(ANYWHERE) never did. This run RX landed safely at
+        // 0x150c00000, but RW landed AT 0x7000000000 anyway, and Civ6 died
+        // with the same c0000018 as before. That address is the base of the
+        // guest's own simulated x86-64 space; parking 384MB of our own pool
+        // there collides with whatever this loader needs to put there.
+        // Reject it the same way RX does, and retry FIXED immediately after
+        // RX — where it lands on its own when the kernel finds room without
+        // being forced to jump that far (this is exactly what happened on
+        // the very first successful pool alloc, before any of this).
+        if Int(rwAddr) >= guestLo && Int(rwAddr) < guestHi {
+            LogStore.shared.log(String(format: "RW landed in guest 64G window (0x%lx) — retrying FIXED at 0x%lx",
+                                       Int(rwAddr), rxAddr + poolSize), level: .error)
+            vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
+            rwAddr = vm_address_t(rxAddr + poolSize)
+            let kr1b = vm_remap(
+                mach_task_self_,
+                &rwAddr,
+                vm_size_t(poolSize),
+                0,
+                VM_FLAGS_FIXED,
+                mach_task_self_,
+                vm_address_t(bitPattern: rxPtr),
+                0,
+                &curProt,
+                &maxProt,
+                VM_INHERIT_NONE
+            )
+            guard kr1b == KERN_SUCCESS else {
+                LogStore.shared.log("RW fixed-retry failed: \(kr1b) — refusing to run with a guest-window RW alias", level: .error)
+                vm_deallocate(mach_task_self_, vm_address_t(bitPattern: rxPtr), vm_size_t(poolSize))
+                return nil
+            }
+            LogStore.shared.log(String(format: "RW re-mapped at 0x%lx (contiguous with RX)", Int(rwAddr)), level: .success)
+        }
 
         // Set RW protection
         let kr2 = vm_protect(mach_task_self_, rwAddr, vm_size_t(poolSize), 0, VM_PROT_READ | VM_PROT_WRITE)
