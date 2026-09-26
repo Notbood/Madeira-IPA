@@ -854,6 +854,13 @@ struct ContentView: View {
     @Namespace private var pointerNS
     /// .compact = iPhone landscape: game surface expands, arrow keys appear.
     @Environment(\.verticalSizeClass) private var vSizeClass
+    /// ml_ipad_fullscreen: manual fullscreen toggle. iPad reports .regular for
+    /// vSizeClass in EVERY orientation (it has no compact-height size class the
+    /// way iPhone landscape does), so landscapeBody — the only fullscreen-ish
+    /// layout that already existed — can never trigger there. This flag is an
+    /// explicit escape hatch so iPad users are not permanently stuck with the
+    /// 55%-height game view + dev log underneath it.
+    @State private var isFullscreen = false
 
     enum JITStatus {
         case unknown
@@ -873,7 +880,9 @@ struct ContentView: View {
          * two-column selection behaviour. */
         NavigationStack {
             Group {
-                if vSizeClass == .compact {
+                if isFullscreen {
+                    fullscreenBody
+                } else if vSizeClass == .compact {
                     landscapeBody
                 } else {
                     portraitBody
@@ -885,13 +894,46 @@ struct ContentView: View {
             // a fresh placeholder only re-parents the same CAMetalLayer.
             .navigationTitle("Madeira")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarHidden(vSizeClass == .compact)
+            .navigationBarHidden(vSizeClass == .compact || isFullscreen)
+            .statusBarHidden(isFullscreen)
+            .persistentSystemOverlays(isFullscreen ? .hidden : .automatic)
             .onAppear {
                 jit_install_trap_handler()
                 entitlements = EntitlementStatus.check()
                 logEntitlementStatus()
             }
         }
+    }
+
+    /// ml_ipad_fullscreen: the game surface fills the entire screen edge-to-edge
+    /// (no nav bar, no log, no action buttons), with one small button to leave.
+    /// Deliberately separate from landscapeBody: that layout is gated on
+    /// vSizeClass and iPad never reports .compact, so iPad needs its own,
+    /// manually-triggered path to the same "just the game" experience.
+    private var fullscreenBody: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black
+            MadeiraMetalView()
+                .onAppear { TouchControlsHost.attach() }
+                .onReceive(NotificationCenter.default.publisher(
+                    for: UIDevice.orientationDidChangeNotification)) { _ in
+                    TouchControlsHost.attach()   // re-frame to the new bounds
+                }
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                withAnimation(.easeInOut(duration: 0.22)) { isFullscreen = false }
+            } label: {
+                Image(systemName: "arrow.down.right.and.arrow.up.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 34, height: 34)
+                    .background(Color.black.opacity(0.35))
+                    .clipShape(Circle())
+            }
+            .padding(10)
+        }
+        .ignoresSafeArea()
+        .background(Color.black)
     }
     
 	private var portraitBody: some View {
@@ -937,6 +979,7 @@ struct ContentView: View {
 						.transition(.opacity)
 						pointerToggleButton
 						diagToggleButton
+						fullscreenToggleButton
 						Spacer()
 					}
 				}
@@ -1016,6 +1059,22 @@ struct ContentView: View {
             Image(systemName: "ladybug")
                 .font(.system(size: 17, weight: .regular))
                 .foregroundStyle(.white.opacity(input.diagnostics ? 1.0 : 0.35))
+                .frame(minWidth: 40, minHeight: 32)
+                .background(Color.secondary.opacity(0.25))
+                .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// ml_ipad_fullscreen: enters fullscreenBody. Placed alongside the other
+    /// toggle buttons so it reads as one more mode switch, not a special case.
+    private var fullscreenToggleButton: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            withAnimation(.easeInOut(duration: 0.22)) { isFullscreen = true }
+        } label: {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 17, weight: .medium))
                 .frame(minWidth: 40, minHeight: 32)
                 .background(Color.secondary.opacity(0.25))
                 .cornerRadius(6)
