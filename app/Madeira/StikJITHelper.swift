@@ -107,9 +107,19 @@ enum StikJITHelper {
         // higher cap so the climb reliably clears the new floor even on an
         // unlucky ASLR slide; vm_allocate here is zero-fill reserve-only, so
         // none of this costs resident memory — cheap even at a larger size.
-        let chunkSize = 64 * 1024 * 1024   // 64 MB per chunk
-        let pinTarget: vm_address_t = 0x180000000
-        let maxChunks = 96                 // safety cap (6 GB of reservation, all virtual)
+        // ml_civ6 v2: 0x180000000 was way too far — it exhausted this device's
+        // entire low-VA budget before the real pool could allocate, so EVERY
+        // launch failed (pin climbed to 0x17bf54000, had nowhere left to go but
+        // the forbidden guest 64G window, which the check below correctly
+        // refused three times and aborted). We only need to clear past a fixed
+        // non-ASLR x64 image sitting at its 0x140000000 default — 0x150000000
+        // gives ~256MB of headroom past that (Civ6's exe is ~57MB) without
+        // coming close to the low-VA ceiling this device actually has. Back to
+        // 16MB chunks (matches the original, proven scheme) with a larger cap
+        // so the longer climb still has room on an unlucky ASLR slide.
+        let chunkSize = 16 * 1024 * 1024   // 16 MB per chunk
+        let pinTarget: vm_address_t = 0x150000000
+        let maxChunks = 64                 // safety cap (1 GB of reservation, all virtual)
         for i in 0..<maxChunks {
             var addr: vm_address_t = 0
             let kr = vm_allocate(mach_task_self_, &addr, vm_size_t(chunkSize), VM_FLAGS_ANYWHERE)
