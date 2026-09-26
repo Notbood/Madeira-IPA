@@ -284,56 +284,6 @@ enum StikJITHelper {
             LogStore.shared.log("vm_remap failed: \(kr1)", level: .error)
             return nil
         }
-        // ml_civ6 v3: RX (jit26_prepare_region, above) already refuses the
-        // guest 64G window via the goodLow/guestLo/guestHi retry loop — RW's
-        // vm_remap(ANYWHERE) never did. This run RX landed safely at
-        // 0x150c00000, but RW landed AT 0x7000000000 anyway, and Civ6 died
-        // with the same c0000018 as before. That address is the base of the
-        // guest's own simulated x86-64 space; parking 384MB of our own pool
-        // there collides with whatever this loader needs to put there.
-        // Reject it the same way RX does, and retry FIXED immediately after
-        // RX — where it lands on its own when the kernel finds room without
-        // being forced to jump that far (this is exactly what happened on
-        // the very first successful pool alloc, before any of this).
-        if Int(rwAddr) >= guestLo && Int(rwAddr) < guestHi {
-            // ml_civ6 v4: a single FIXED guess right after RX isn't reliable —
-            // that exact slot can already be occupied by something unrelated
-            // to our own pins (log: kr=3 KERN_INVALID_ADDRESS at 0x168400000
-            // right after a clean RX at 0x150400000). Scan forward in 16MB
-            // steps looking for ANY poolSize-sized free window below the
-            // guest floor, instead of betting everything on one address.
-            LogStore.shared.log(String(format: "RW landed in guest 64G window (0x%lx) — scanning for a FIXED slot after RX",
-                                       Int(rwAddr)), level: .error)
-            vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
-
-            let step = 16 * 1024 * 1024   // 16MB scan granularity
-            let maxScan = 64              // up to 1GB of search room before giving up
-            var candidate = rxAddr + poolSize
-            var placed = false
-            for i in 0..<maxScan {
-                if candidate + poolSize > guestLo {
-                    LogStore.shared.log("RW scan reached the guest window without finding room", level: .error)
-                    break
-                }
-                rwAddr = vm_address_t(candidate)
-                let krTry = vm_remap(
-                    mach_task_self_, &rwAddr, vm_size_t(poolSize), 0, VM_FLAGS_FIXED,
-                    mach_task_self_, vm_address_t(bitPattern: rxPtr), 0,
-                    &curProt, &maxProt, VM_INHERIT_NONE
-                )
-                if krTry == KERN_SUCCESS {
-                    LogStore.shared.log(String(format: "RW placed at 0x%lx after %d scan step(s)", Int(rwAddr), i), level: .success)
-                    placed = true
-                    break
-                }
-                candidate += step
-            }
-            guard placed else {
-                LogStore.shared.log("RW: no free slot found short of the guest window — refusing to run", level: .error)
-                vm_deallocate(mach_task_self_, vm_address_t(bitPattern: rxPtr), vm_size_t(poolSize))
-                return nil
-            }
-        }
 
         // Set RW protection
         let kr2 = vm_protect(mach_task_self_, rwAddr, vm_size_t(poolSize), 0, VM_PROT_READ | VM_PROT_WRITE)
